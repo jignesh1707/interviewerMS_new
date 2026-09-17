@@ -35,10 +35,10 @@ class ModelCandidate(BaseModel):
             + self.output_price * OUTPUT_COST_WEIGHT
         )
 
-    def sort_key(self) -> tuple[int, float]:
+    def sort_key(self, yaml_index: int = 0) -> tuple[int, float]:
         if self.priority is not None:
             return (0, float(self.priority))
-        return (1, self.cost_score())
+        return (1, float(yaml_index))
 
 
 class RouterConfig(BaseModel):
@@ -52,7 +52,13 @@ class RouterConfig(BaseModel):
     def candidates(self, tier: str) -> list[ModelCandidate]:
         if tier not in self.tiers:
             raise ValidationAppError(f"unknown model tier '{tier}'", details={"tier": tier})
-        return sorted(self.tiers[tier], key=ModelCandidate.sort_key)
+        return [
+            candidate
+            for _, candidate in sorted(
+                enumerate(self.tiers[tier]),
+                key=lambda item: item[1].sort_key(item[0]),
+            )
+        ]
 
 
 @dataclass
@@ -132,8 +138,8 @@ class ModelRouter:
     def _build_providers(self) -> None:
         s = self.settings
         self._providers = {
-            "deepseek": OpenAICompatibleClient("deepseek", s.deepseek_base_url, s.deepseek_api_key, s.llm_timeout_seconds),
             "openai": OpenAICompatibleClient("openai", s.openai_base_url, s.openai_api_key, s.llm_timeout_seconds),
+            "deepseek": OpenAICompatibleClient("deepseek", s.deepseek_base_url, s.deepseek_api_key, s.llm_timeout_seconds),
             "anthropic": AnthropicClient("anthropic", s.anthropic_base_url, s.anthropic_api_key, s.llm_timeout_seconds),
         }
 

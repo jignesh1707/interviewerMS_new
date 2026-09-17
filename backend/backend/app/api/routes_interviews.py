@@ -109,8 +109,9 @@ async def submit_text_answer(interview_id: str, payload: AnswerTextRequest) -> A
     service = get_interview_service()
     result = await service.submit_answer(
         interview_id,
-        payload.question_index,
-        payload.transcript,
+        transcript=payload.transcript,
+        question_id=payload.question_id,
+        question_index=payload.question_index,
         duration_seconds=payload.duration_seconds,
     )
     return AnswerResponse(**result)
@@ -132,8 +133,8 @@ async def submit_audio_answer(
     duration = duration_seconds or transcription.get("duration_seconds")
     result = await service.submit_answer(
         interview_id,
-        question_index,
-        transcription["text"],
+        transcript=transcription["text"],
+        question_index=question_index,
         duration_seconds=duration,
         audio_path=audio_path,
     )

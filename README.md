@@ -23,10 +23,10 @@ webhook callbacks.
 
 ## Key design points
 
-- **Cost-aware model router.** Three platforms (DeepSeek, OpenAI, Anthropic) are arranged in
-  capability tiers. Simple tasks go to the cheapest model, complex tasks go to the best model.
-  If the cheapest provider is down or rate-limited, the router fails over to the next provider,
-  with a circuit breaker so a broken provider is not hammered.
+- **Cost-aware model router.** Three platforms are tried in a fixed fallback order: OpenAI,
+  then DeepSeek, then Anthropic. Simple tasks stay on cheaper models inside that order; complex
+  tasks use stronger models. If the preferred provider is down or rate-limited, the router fails
+  over to the next provider, with a circuit breaker so a broken provider is not hammered.
 - **Python-first.** Parsing, metrics, heuristic scoring, aggregation and fallbacks are implemented
   in Python. LLM calls are reserved for generation and judgement.
 - **Local voice stack.** faster-whisper for speech-to-text and piper for text-to-speech, so there
@@ -42,8 +42,8 @@ graph TD
     API --> Parser["Python document parser"]
     API --> Engine["Interview engine"]
     Engine --> Router["Model router"]
-    Router --> DeepSeek["DeepSeek"]
     Router --> OpenAI["OpenAI"]
+    Router --> DeepSeek["DeepSeek"]
     Router --> Anthropic["Anthropic"]
     Engine --> Analytics["Python text analytics"]
     Engine --> STT["faster-whisper STT"]
@@ -61,7 +61,7 @@ backend/
     config.py                   Environment-driven settings
     api/                        Routes: system, interviews, speech
     llm/router.py               Multi-provider routing, tiers, fallback, circuit breaker
-    llm/providers/              DeepSeek/OpenAI (compatible) and Anthropic clients
+    llm/providers/              OpenAI/DeepSeek (compatible) and Anthropic clients
     prompts/                    Prompt builders for questions, analysis, report
     services/
       document_parser.py        PDF/DOCX extraction + skill/achievement heuristics
@@ -87,11 +87,11 @@ docs/                           Integration and routing guides
 INSTALL_VOICE=1 ./scripts/setup_backend.sh
 ```
 
-Add at least one provider key to `backend/.env`:
+Add at least one provider key to `backend/.env`. The router tries OpenAI first, then DeepSeek, then Anthropic:
 
 ```bash
-DEEPSEEK_API_KEY=...
 OPENAI_API_KEY=...
+DEEPSEEK_API_KEY=...
 ANTHROPIC_API_KEY=...
 ```
 
@@ -248,6 +248,7 @@ To keep running costs low:
 
 - Resume and JD parsing, metrics and heuristic scoring are pure Python.
 - Cheap-tier models handle short follow-ups, tagging and coaching hints.
+- Fallback order is OpenAI, then DeepSeek, then Anthropic, so a cheaper or stronger later candidate is not preferred over a configured OpenAI key.
 - Premium models are used only for final scoring and the recruiter narrative.
 - Per-answer LLM analysis can be disabled with `config.analyze_per_answer = false`, which leaves
   Python heuristics in place.

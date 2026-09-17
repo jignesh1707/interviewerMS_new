@@ -95,8 +95,8 @@ class FakeRouter:
         usage = UsageTotals()
         return {
             "providers": {
-                "deepseek": {"configured": True, "available": True},
                 "openai": {"configured": True, "available": True},
+                "deepseek": {"configured": True, "available": True},
                 "anthropic": {"configured": True, "available": True},
             },
             "tiers": {},

@@ -97,7 +97,7 @@ When done, call `POST /api/v1/interviews/{id}/finish` to receive the report, or 
     {"index": 0, "question": "…", "overall": 78, "words_per_minute": 132, "filler_total": 3}
   ],
   "routing_trace": {
-    "final_scoring": {"provider": "deepseek", "model": "deepseek-reasoner", "tier": "premium", "fallbacks": 0}
+    "final_scoring": {"provider": "openai", "model": "gpt-4o", "tier": "premium", "fallbacks": 0}
   }
 }
 ```

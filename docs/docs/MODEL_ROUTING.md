@@ -4,7 +4,7 @@ The router lives in `backend/app/llm/router.py` and is configured by `backend/mo
 
 ## Concepts
 
-- **Tier**: an ordered list of `{provider, model}` candidates from cheapest to strongest.
+- **Tier**: an ordered list of `{provider, model}` candidates. Fallback order is OpenAI, then DeepSeek, then Anthropic.
 - **Task**: a named unit of work (`question_generation`, `final_scoring`, ...).
 - **Task map**: assigns each task to a tier, so simple work never reaches an expensive model.
 - **Circuit breaker**: a provider that keeps failing is temporarily removed from the candidate list.
@@ -17,14 +17,21 @@ The router lives in `backend/app/llm/router.py` and is configured by `backend/mo
 ```yaml
 tiers:
   cheap:
-    - provider: deepseek
-      model: deepseek-chat
-      input_price: 0.27      # USD per 1M input tokens
-      output_price: 1.10
     - provider: openai
       model: gpt-4o-mini
-      input_price: 0.15
+      input_price: 0.15      # USD per 1M input tokens
       output_price: 0.60
+      priority: 0
+    - provider: deepseek
+      model: deepseek-chat
+      input_price: 0.27
+      output_price: 1.10
+      priority: 1
+    - provider: anthropic
+      model: claude-3-5-haiku-latest
+      input_price: 0.80
+      output_price: 4.00
+      priority: 2
 
   standard: [ ... ]
   premium:  [ ... ]
@@ -40,9 +47,10 @@ default_tier: standard
 
 Rules:
 
-- Candidate order inside a tier is the fallback order. Put the cheapest viable option first.
+- Candidate order inside a tier is the fallback order. Put OpenAI first, then DeepSeek, then Anthropic.
 - Prices are only used for the cost estimate reported in `/api/v1/models` and `routing_trace`; they
   are not used for routing decisions. Update them to match current provider pricing.
+- Set `priority` on a candidate to override YAML order (lower is tried first).
 - A provider with no API key in `.env` is skipped, so you can run with a subset of platforms.
 - `input_price` / `output_price` default to `0`, which simply yields `$0` estimates.
 
@@ -77,9 +85,9 @@ The interview engine catches that error and degrades instead of failing the requ
 ```json
 {
   "providers": {
-    "deepseek": {"configured": true, "available": true, "consecutive_failures": 0, "disabled_for_seconds": 0.0, "last_error": ""}
+    "openai": {"configured": true, "available": true, "consecutive_failures": 0, "disabled_for_seconds": 0.0, "last_error": ""}
   },
-  "tiers": {"cheap": [{"provider": "deepseek", "model": "deepseek-chat"}]},
+  "tiers": {"cheap": [{"provider": "openai", "model": "gpt-4o-mini"}]},
   "tasks": {"final_scoring": "premium"},
   "usage": {"calls": 12, "input_tokens": 18432, "output_tokens": 5120, "estimated_cost_usd": 0.0105, "by_model": {}}
 }
