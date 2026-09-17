@@ -1,0 +1,70 @@
+# Model routing configuration.
+#
+# Candidate order inside a tier is cheapest-first. Prices are USD per 1,000,000 tokens.
+# The router also sorts candidates by expected cost, so this ordering is documentation
+# rather than the source of truth. Set `priority` on a candidate to override cost sorting
+# (lower priority is tried first) when you prefer a specific model for quality reasons.
+#
+# A provider with no API key in .env is skipped automatically.
+# Keep prices current: they drive the cost estimate in /api/v1/models and the sort order.
+
+tiers:
+  # High-volume, short-output work: tagging, follow-up questions, coaching hints.
+  cheap:
+    - provider: openai
+      model: gpt-4o-mini
+      input_price: 0.15
+      output_price: 0.60
+    - provider: deepseek
+      model: deepseek-chat
+      input_price: 0.27
+      output_price: 1.10
+    - provider: anthropic
+      model: claude-3-5-haiku-latest
+      input_price: 0.80
+      output_price: 4.00
+
+  # Core structured generation: STAR question sets, per-answer analysis, tips.
+  standard:
+    - provider: openai
+      model: gpt-4o-mini
+      input_price: 0.15
+      output_price: 0.60
+    - provider: deepseek
+      model: deepseek-chat
+      input_price: 0.27
+      output_price: 1.10
+    - provider: anthropic
+      model: claude-3-5-sonnet-latest
+      input_price: 3.00
+      output_price: 15.00
+
+  # High-stakes reasoning: final scoring and recruiter narrative.
+  # Note: deepseek-reasoner is cheapest here, so it is tried first and the frontier
+  # models act as fallbacks. Raise `priority` on a frontier model to prefer it instead.
+  premium:
+    - provider: deepseek
+      model: deepseek-reasoner
+      input_price: 0.55
+      output_price: 2.19
+    - provider: openai
+      model: gpt-4o
+      input_price: 2.50
+      output_price: 10.00
+    - provider: anthropic
+      model: claude-3-7-sonnet-latest
+      input_price: 3.00
+      output_price: 15.00
+
+tasks:
+  resume_summary: cheap
+  jd_metadata: cheap
+  followup_generation: cheap
+  answer_coaching: cheap
+  question_generation: standard
+  tips_generation: standard
+  answer_analysis: standard
+  final_scoring: premium
+  report_narrative: premium
+
+default_tier: standard
