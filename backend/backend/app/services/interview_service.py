@@ -7,6 +7,7 @@ from app.core.errors import AllProvidersFailedError, ValidationAppError
 from app.core.logging import get_logger
 from app.llm.providers.base import LLMMessage
 from app.llm.router import ModelRouter, get_router
+from app.llm.safety import redact_secrets
 from app.llm.tasks import LLMTask
 from app.prompts.analysis import build_answer_analysis_messages, build_coaching_messages
 from app.prompts.questions import build_followup_messages, build_question_generation_messages, build_resume_summary_messages
@@ -529,11 +530,12 @@ class InterviewService:
         try:
             payload, result = await self.router.complete_json(task, messages)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("llm_task_degraded task=%s interview=%s error=%s", task, interview_id, exc)
+            safe_error = redact_secrets(str(exc)[:300])
+            logger.warning("llm_task_degraded task=%s interview=%s error=%s", task, interview_id, safe_error)
             self.store.add_event(
                 interview_id,
                 "interview.llm_degraded",
-                {"task": str(task), "error": str(exc)[:300]},
+                {"task": str(task), "error": safe_error},
             )
             return None, None
         routing = {

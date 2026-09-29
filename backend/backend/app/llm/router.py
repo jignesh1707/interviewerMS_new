@@ -6,14 +6,23 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from app.config import Settings, get_settings
-from app.core.errors import AllProvidersFailedError, ProviderError, ValidationAppError
-from app.core.logging import get_logger
+from app.core.errors import AllProvidersFailedError, PolicyDeniedError, ProviderError, SafetyViolationError, ValidationAppError
+from app.core.logging import get_logger, install_secret_filter
 from app.llm.providers.anthropic import AnthropicClient
 from app.llm.providers.base import LLMMessage, ProviderCallError, ProviderResponse
 from app.llm.providers.openai_compatible import OpenAICompatibleClient
+from app.llm.safety import (
+    ModelRequest,
+    assert_request_safe,
+    bound_provider_call,
+    known_task,
+    redact_secrets,
+    validate_provider_response,
+    validate_structured_output,
+)
 
 logger = get_logger(__name__)
 
@@ -73,7 +82,7 @@ class ProviderHealth:
 
     def record_failure(self, message: str, cooldown: float, now: float, auth_error: bool = False) -> None:
         self.consecutive_failures += 1
-        self.last_error = message[:500]
+        self.last_error = redact_secrets(message)[:500]
         self.last_error_at = now
         effective_cooldown = cooldown * max(1, min(self.consecutive_failures, 5))
         if auth_error:
@@ -134,6 +143,18 @@ class ModelRouter:
         self._lock = asyncio.Lock()
         self._providers: dict[str, Any] = {}
         self._build_providers()
+        install_secret_filter(self._secret_values())
+
+    def _secret_values(self) -> tuple[str, ...]:
+        s = self.settings
+        values = [
+            s.openai_api_key,
+            s.deepseek_api_key,
+            s.anthropic_api_key,
+            s.webhook_secret,
+            *s.api_key_set,
+        ]
+        return tuple(item for item in values if item)
 
     def _build_providers(self) -> None:
         s = self.settings
@@ -150,11 +171,20 @@ class ModelRouter:
     def health(self, name: str) -> ProviderHealth:
         return self._health.setdefault(name, ProviderHealth())
 
-    def _plan(self, tier: str) -> tuple[list[ModelCandidate], list[dict[str, Any]]]:
+    def _plan(
+        self,
+        tier: str,
+        authorized: frozenset[str] | None,
+    ) -> tuple[list[ModelCandidate], list[dict[str, Any]]]:
         now = time.monotonic()
         ready: list[ModelCandidate] = []
         skipped: list[dict[str, Any]] = []
         for candidate in self.config.candidates(tier):
+            if authorized is not None and candidate.provider not in authorized:
+                skipped.append(
+                    {"provider": candidate.provider, "model": candidate.model, "reason": "not_authorized"}
+                )
+                continue
             if not self.provider_configured(candidate.provider):
                 skipped.append({"provider": candidate.provider, "model": candidate.model, "reason": "not_configured"})
                 continue
@@ -164,6 +194,11 @@ class ModelRouter:
             ready.append(candidate)
         return ready, skipped
 
+    def _authorized_set(self, request: ModelRequest) -> frozenset[str] | None:
+        if request.authorized_providers is None:
+            return None
+        return frozenset(request.authorized_providers)
+
     async def complete(
         self,
         task: str,
@@ -172,15 +207,48 @@ class ModelRouter:
         tier: str | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        authorized_providers: tuple[str, ...] | None = None,
     ) -> LLMResult:
-        resolved_tier = tier or self.config.tier_for_task(task)
-        ready, skipped = self._plan(resolved_tier)
+        try:
+            request = ModelRequest(
+                task=task,
+                messages=messages,
+                authorized_providers=authorized_providers,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout_seconds=self.settings.llm_timeout_seconds,
+                expect_json=False,
+            )
+        except ValidationError as exc:
+            raise PolicyDeniedError("malformed model request", details={"errors": exc.errors()}) from exc
+        return await self._complete_validated(request, tier=tier)
+
+    async def complete_request(self, request: ModelRequest) -> LLMResult:
+        if not known_task(request.task, self.config.tasks):
+            raise PolicyDeniedError(
+                f"unknown or unauthorized task '{request.task}'",
+                details={"task": request.task},
+            )
+        return await self._complete_validated(request)
+
+    async def _complete_validated(self, request: ModelRequest, *, tier: str | None = None) -> LLMResult:
+        assert_request_safe(request, self._secret_values())
+        if not known_task(request.task, self.config.tasks):
+            raise PolicyDeniedError(
+                f"unknown or unauthorized task '{request.task}'",
+                details={"task": request.task},
+            )
+        resolved_tier = tier or self.config.tier_for_task(request.task)
+        authorized = self._authorized_set(request)
+        ready, skipped = self._plan(resolved_tier, authorized)
         attempts: list[dict[str, Any]] = [dict(skip, stage="plan") for skip in skipped]
 
         if not ready:
-            raise AllProvidersFailedError(
+            denied = bool(skipped) and all(item.get("reason") == "not_authorized" for item in skipped)
+            error_cls = PolicyDeniedError if denied or authorized == frozenset() else AllProvidersFailedError
+            raise error_cls(
                 f"no configured/available provider for tier '{resolved_tier}'",
-                details={"task": task, "tier": resolved_tier, "attempts": attempts},
+                details={"task": request.task, "tier": resolved_tier, "attempts": attempts},
             )
 
         last_error: Exception | None = None
@@ -189,21 +257,24 @@ class ModelRouter:
             started = time.monotonic()
             for attempt in range(1, self.settings.llm_max_attempts_per_provider + 1):
                 try:
-                    response = await provider.complete(
-                        messages,
-                        model=candidate.model,
-                        temperature=self.settings.llm_temperature if temperature is None else temperature,
-                        max_tokens=max_tokens or self.settings.llm_max_output_tokens,
-                    )
+                    with bound_provider_call(task=request.task, provider=candidate.provider, model=candidate.model):
+                        response = await provider.complete(
+                            request.llm_messages(),
+                            model=candidate.model,
+                            temperature=self.settings.llm_temperature if request.temperature is None else request.temperature,
+                            max_tokens=request.max_tokens or self.settings.llm_max_output_tokens,
+                        )
+                    response = validate_provider_response(response, self._secret_values())
                 except ProviderCallError as exc:
                     latency_ms = int((time.monotonic() - started) * 1000)
+                    safe_error = redact_secrets(exc.message, self._secret_values())
                     attempts.append(
                         {
                             "provider": candidate.provider,
                             "model": candidate.model,
                             "attempt": attempt,
                             "status": "error",
-                            "error": exc.message,
+                            "error": safe_error,
                             "retryable": exc.retryable,
                             "latency_ms": latency_ms,
                         }
@@ -213,28 +284,51 @@ class ModelRouter:
                         "provider_call_failed provider=%s model=%s task=%s attempt=%s retryable=%s error=%s",
                         candidate.provider,
                         candidate.model,
-                        task,
+                        request.task,
                         attempt,
                         exc.retryable,
-                        exc.message,
+                        safe_error,
                     )
                     if exc.retryable and attempt < self.settings.llm_max_attempts_per_provider:
                         continue
                     break
-                except Exception as exc:  # noqa: BLE001
+                except (SafetyViolationError, PolicyDeniedError) as exc:
+                    latency_ms = int((time.monotonic() - started) * 1000)
+                    safe_error = redact_secrets(str(exc), self._secret_values())
                     attempts.append(
                         {
                             "provider": candidate.provider,
                             "model": candidate.model,
                             "attempt": attempt,
                             "status": "error",
-                            "error": str(exc),
+                            "error": safe_error,
+                            "retryable": False,
+                            "latency_ms": latency_ms,
+                        }
+                    )
+                    last_error = exc
+                    logger.warning(
+                        "provider_call_rejected provider=%s task=%s error=%s",
+                        candidate.provider,
+                        request.task,
+                        safe_error,
+                    )
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    safe_error = redact_secrets(str(exc), self._secret_values())
+                    attempts.append(
+                        {
+                            "provider": candidate.provider,
+                            "model": candidate.model,
+                            "attempt": attempt,
+                            "status": "error",
+                            "error": safe_error,
                             "retryable": True,
                             "latency_ms": int((time.monotonic() - started) * 1000),
                         }
                     )
                     last_error = exc
-                    logger.exception("provider_call_unexpected provider=%s task=%s", candidate.provider, task)
+                    logger.exception("provider_call_unexpected provider=%s task=%s", candidate.provider, request.task)
                     break
                 else:
                     latency_ms = int((time.monotonic() - started) * 1000)
@@ -254,7 +348,7 @@ class ModelRouter:
                         "provider_call_ok provider=%s model=%s task=%s tier=%s latency_ms=%s cost_usd=%.6f",
                         candidate.provider,
                         response.model,
-                        task,
+                        request.task,
                         resolved_tier,
                         latency_ms,
                         cost,
@@ -264,7 +358,7 @@ class ModelRouter:
                         provider=candidate.provider,
                         model=response.model,
                         tier=resolved_tier,
-                        task=task,
+                        task=request.task,
                         input_tokens=response.input_tokens,
                         output_tokens=response.output_tokens,
                         estimated_cost_usd=cost,
@@ -275,12 +369,20 @@ class ModelRouter:
             auth_error = isinstance(last_error, ProviderCallError) and last_error.auth_error
             async with self._lock:
                 self.health(candidate.provider).record_failure(
-                    str(last_error), self.settings.provider_cooldown_seconds, time.monotonic(), auth_error
+                    redact_secrets(str(last_error), self._secret_values()),
+                    self.settings.provider_cooldown_seconds,
+                    time.monotonic(),
+                    auth_error,
                 )
 
         raise AllProvidersFailedError(
-            f"all providers failed for task '{task}'",
-            details={"task": task, "tier": resolved_tier, "attempts": attempts, "last_error": str(last_error)},
+            f"all providers failed for task '{request.task}'",
+            details={
+                "task": request.task,
+                "tier": resolved_tier,
+                "attempts": attempts,
+                "last_error": redact_secrets(str(last_error), self._secret_values()),
+            },
         )
 
     async def complete_json(
@@ -291,16 +393,28 @@ class ModelRouter:
         tier: str | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        authorized_providers: tuple[str, ...] | None = None,
     ) -> tuple[dict[str, Any], LLMResult]:
         result = await self.complete(
-            task, messages, tier=tier, temperature=temperature, max_tokens=max_tokens
+            task,
+            messages,
+            tier=tier,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            authorized_providers=authorized_providers,
         )
         try:
-            return extract_json(result.text), result
+            payload = extract_json(result.text)
+            return validate_structured_output(task, payload), result
         except ValueError as exc:
             raise ProviderError(
                 f"model '{result.provider}/{result.model}' returned unparseable JSON",
-                details={"task": task, "raw_preview": result.text[:500]},
+                details={"task": task, "raw_preview": redact_secrets(result.text[:500], self._secret_values())},
+            ) from exc
+        except SafetyViolationError as exc:
+            raise ProviderError(
+                f"model '{result.provider}/{result.model}' returned invalid structured output",
+                details={"task": task},
             ) from exc
 
     def status(self) -> dict[str, Any]:

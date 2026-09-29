@@ -40,6 +40,16 @@ class AllProvidersFailedError(ProviderError):
     code = "all_providers_failed"
 
 
+class PolicyDeniedError(AppError):
+    status_code = 403
+    code = "policy_denied"
+
+
+class SafetyViolationError(AppError):
+    status_code = 500
+    code = "safety_violation"
+
+
 class SpeechUnavailableError(AppError):
     status_code = 503
     code = "speech_unavailable"

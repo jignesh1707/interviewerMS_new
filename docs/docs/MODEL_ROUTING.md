@@ -98,11 +98,17 @@ step and whether failover happened.
 
 ## Adding a provider
 
+See `docs/security/EXTERNAL_MODEL_SAFETY_BOUNDARY.md`. Every adapter must call
+`require_boundary_permit()` and must not define its own security policy.
+
 1. Implement a client with `configured` and `async complete(messages, model, temperature, max_tokens)`
    in `backend/app/llm/providers/`.
-2. Register it in `ModelRouter._build_providers`.
-3. Add its API key and base URL to `config.py` and `.env.example`.
-4. Add candidates for it in `models.yaml`.
+2. Call `require_boundary_permit()` at the start of `complete`.
+3. Register it in `ModelRouter._build_providers` using an approved Settings key/URL.
+4. Add the provider host to the shared HTTPS allowlist in `app/llm/safety.py`.
+5. Add its API key and base URL to `config.py` and `.env.example`.
+6. Add candidates for it in `models.yaml`.
+7. Do not add provider-specific security branches.
 
 ## Choosing a tier for a new task
 
