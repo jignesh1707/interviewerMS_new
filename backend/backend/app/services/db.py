@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Protocol
 
-TABLES = ("interviews", "answers", "reports", "events", "quotas")
+TABLES = ("interviews", "answers", "reports", "events", "packs", "pack_payments")
 _TABLE_RE = re.compile(r"\b(" + "|".join(TABLES) + r")\b")
 _IDENT_RE = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
 
@@ -77,14 +77,29 @@ CREATE TABLE IF NOT EXISTS events (
     created_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS quotas (
+CREATE TABLE IF NOT EXISTS packs (
     tenant_id TEXT NOT NULL,
     external_ref TEXT NOT NULL,
-    period_key TEXT NOT NULL,
-    used_minutes INTEGER NOT NULL DEFAULT 0,
-    bonus_minutes INTEGER NOT NULL DEFAULT 0,
+    plan TEXT NOT NULL,
+    minutes_total INTEGER NOT NULL DEFAULT 0,
+    minutes_used INTEGER NOT NULL DEFAULT 0,
+    interviews_started INTEGER NOT NULL DEFAULT 0,
+    expires_at INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL,
-    PRIMARY KEY (tenant_id, external_ref, period_key)
+    PRIMARY KEY (tenant_id, external_ref, plan)
+);
+
+CREATE TABLE IF NOT EXISTS pack_payments (
+    tenant_id TEXT NOT NULL,
+    payment_id TEXT NOT NULL,
+    external_ref TEXT NOT NULL,
+    plan TEXT NOT NULL,
+    minutes INTEGER NOT NULL,
+    days INTEGER NOT NULL,
+    purchased_at INTEGER NOT NULL,
+    revoked_at INTEGER,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, payment_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_answers_interview ON answers (interview_id, question_index);
@@ -147,15 +162,30 @@ CREATE TABLE IF NOT EXISTS events (
     created_at TEXT NOT NULL
 );
 
--- Minutes a student has booked in a period (see plans.yaml). One row per tenant, student and period.
-CREATE TABLE IF NOT EXISTS quotas (
+-- A student's purchased interview minutes (see plans.yaml): one wallet per tenant, student and plan.
+CREATE TABLE IF NOT EXISTS packs (
     tenant_id TEXT NOT NULL,
     external_ref TEXT NOT NULL,
-    period_key TEXT NOT NULL,
-    used_minutes INTEGER NOT NULL DEFAULT 0,
-    bonus_minutes INTEGER NOT NULL DEFAULT 0,
+    plan TEXT NOT NULL,
+    minutes_total INTEGER NOT NULL DEFAULT 0,
+    minutes_used INTEGER NOT NULL DEFAULT 0,
+    interviews_started INTEGER NOT NULL DEFAULT 0,
+    expires_at BIGINT NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL,
-    PRIMARY KEY (tenant_id, external_ref, period_key)
+    PRIMARY KEY (tenant_id, external_ref, plan)
+);
+
+CREATE TABLE IF NOT EXISTS pack_payments (
+    tenant_id TEXT NOT NULL,
+    payment_id TEXT NOT NULL,
+    external_ref TEXT NOT NULL,
+    plan TEXT NOT NULL,
+    minutes INTEGER NOT NULL,
+    days INTEGER NOT NULL,
+    purchased_at BIGINT NOT NULL,
+    revoked_at BIGINT,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, payment_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_answers_interview ON answers (interview_id, question_index);
@@ -169,12 +199,14 @@ ALTER TABLE interviews ENABLE ROW LEVEL SECURITY;
 ALTER TABLE answers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE reports ENABLE ROW LEVEL SECURITY;
 ALTER TABLE events ENABLE ROW LEVEL SECURITY;
-ALTER TABLE quotas ENABLE ROW LEVEL SECURITY;
+ALTER TABLE packs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pack_payments ENABLE ROW LEVEL SECURITY;
 """
 
 
 class Tx(Protocol):
     def execute(self, sql: str, params: tuple = ()) -> None: ...
+    def execute_count(self, sql: str, params: tuple = ()) -> int: ...
     def query_all(self, sql: str, params: tuple = ()) -> list[dict[str, Any]]: ...
 
 
@@ -258,6 +290,9 @@ class _SqliteTx:
     def execute(self, sql: str, params: tuple = ()) -> None:
         self._connection.execute(sql, params)
 
+    def execute_count(self, sql: str, params: tuple = ()) -> int:
+        return self._connection.execute(sql, params).rowcount
+
     def query_all(self, sql: str, params: tuple = ()) -> list[dict[str, Any]]:
         return [dict(row) for row in self._connection.execute(sql, params).fetchall()]
 
@@ -333,6 +368,9 @@ class _PostgresTx:
 
     def execute(self, sql: str, params: tuple = ()) -> None:
         self._conn.execute(self._qualify(sql), params)
+
+    def execute_count(self, sql: str, params: tuple = ()) -> int:
+        return self._conn.execute(self._qualify(sql), params).rowcount
 
     def query_all(self, sql: str, params: tuple = ()) -> list[dict[str, Any]]:
         return list(self._conn.execute(self._qualify(sql), params).fetchall())

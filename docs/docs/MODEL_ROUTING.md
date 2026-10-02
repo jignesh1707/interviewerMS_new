@@ -63,6 +63,39 @@ result = await router.complete("question_generation", messages, tier="premium")
 
 This is useful for forcing a higher tier on an important candidate without changing global config.
 
+## Profiles: a different provider list per plan
+
+`models.yaml` has a default profile (the top-level `tiers`, named `economy`) and extra profiles under `profiles:`, each
+with its own `cheap`, `standard` and `premium` lists. `plans.yaml` picks one per plan with `llm_profile`. The shipped
+setup:
+
+- `economy`: DeepSeek, then OpenRouter, OpenAI, Anthropic.
+- `premium`: Anthropic (Haiku 4.5 for light work, Sonnet 5.5 for the rest), then OpenAI. No DeepSeek.
+
+Rules:
+
+- **Fallbacks never leave a profile.** A request for the `premium` profile can only ever try that profile's candidates.
+- **An unknown profile is an error**, never a silent fallback to `economy`.
+- **A plan's `llm_allowed_providers`** is passed with every AI call (`authorized_providers`) and enforced by the router
+  regardless of `models.yaml`. At startup the service refuses to start if a plan names a profile that does not exist,
+  or if its profile lists a provider the plan forbids.
+- **Replacing a provider** (for example removing DeepSeek from Economy) is an edit to `models.yaml` plus a restart. If
+  you change which companies process student data, update the privacy policy and consent text in the main app.
+  `GET /api/v1/plans` shows the providers each plan may use right now.
+
+Per-model `options` (optional) adjust the request. The Anthropic adapter understands `omit_temperature` (newer Claude
+models reject a non-default temperature) and `body`, extra request fields such as `thinking: {type: between_tools}`
+(turns thinking off, which is on by default and billed as output) and `output_config: {effort: low}`. They can never
+replace `model`, `messages`, `max_tokens` or `system`. Haiku 4.5 does not accept `effort`, so it has no options.
+
+Check a profile against the live APIs (one tiny request per model; skips providers without a key; exit status 1 if a
+model fails):
+
+```bash
+python -m app.llm_smoke --profile premium
+python -m app.llm_smoke                    # the default (economy) profile
+```
+
 ## Failure handling
 
 1. The router builds a plan for the tier, skipping unconfigured providers and providers whose

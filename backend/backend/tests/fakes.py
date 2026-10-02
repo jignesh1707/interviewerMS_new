@@ -74,7 +74,15 @@ class FakeRouter:
         return defaults.get(task, {})
 
     async def complete(self, task: str, messages: list[Any], **kwargs: Any) -> LLMResult:
-        self.calls.append({"task": task, "tier": kwargs.get("tier"), "messages": messages})
+        self.calls.append(
+            {
+                "task": task,
+                "tier": kwargs.get("tier"),
+                "messages": messages,
+                "profile": kwargs.get("profile"),
+                "authorized_providers": kwargs.get("authorized_providers"),
+            }
+        )
         return LLMResult(
             text="{}",
             provider="fake",
@@ -85,6 +93,7 @@ class FakeRouter:
             output_tokens=5,
             estimated_cost_usd=0.0,
             latency_ms=1,
+            profile=kwargs.get("profile") or "economy",  # like the real router: the default profile when none is asked for
         )
 
     async def complete_json(self, task: str, messages: list[Any], **kwargs: Any) -> tuple[dict[str, Any], LLMResult]:

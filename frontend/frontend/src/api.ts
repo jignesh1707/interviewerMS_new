@@ -64,6 +64,7 @@ export function createInterview(
     jd_text?: string
     callback_url?: string
     external_ref?: string
+    plan?: string
     config?: Record<string, unknown>
   },
 ) {

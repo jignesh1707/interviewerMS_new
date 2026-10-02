@@ -322,24 +322,63 @@ def test_as_role_handles_tcp_and_unix_socket_urls(url, expected):
     assert _as_role(url, "r") == expected
 
 
-def test_quota_ledger_on_postgres(store):
-    period = "2026-10"
-    assert store.quota_get("t1", "stu", period) == {"used_minutes": 0, "bonus_minutes": 0}
+PACK_KEY = ("t1", "pack-stu", "economy")
+DAY = 86400
+T0 = 1_800_000_000
+
+
+def _buy(store, payment_id, at=T0, key=PACK_KEY, minutes=150, days=30):
+    return store.pack_activate(*key, payment_id=payment_id, minutes=minutes, days=days, purchased_at=at)
+
+
+def test_pack_ledger_on_postgres(store):
+    assert store.pack_get(*PACK_KEY) is None
+    assert _buy(store, "evt-1") is True
+    assert _buy(store, "evt-1") is False  # a replayed payment applies once
     for _ in range(10):
-        assert store.quota_debit("t1", "stu", period, 15, allowance=150) is True
-    assert store.quota_debit("t1", "stu", period, 15, allowance=150) is False
-    store.quota_add_bonus("t1", "stu", period, 15)
-    assert store.quota_debit("t1", "stu", period, 15, allowance=150) is True
-    store.quota_credit("t1", "stu", period, 30)
-    assert store.quota_get("t1", "stu", period) == {"used_minutes": 135, "bonus_minutes": 15}
+        assert store.pack_debit(*PACK_KEY, 15, now=T0 + DAY) is True
+    assert store.pack_debit(*PACK_KEY, 15, now=T0 + DAY) is False
+    row = store.pack_get(*PACK_KEY)
+    assert (row["minutes_total"], row["minutes_used"], row["interviews_started"]) == (150, 150, 10)
+
+    assert _buy(store, "evt-2", at=T0 + 5 * DAY) is True  # all used: a fresh pack from this purchase
+    row = store.pack_get(*PACK_KEY)
+    assert (row["minutes_total"], row["minutes_used"], row["expires_at"]) == (150, 0, T0 + 35 * DAY)
+
+    assert _buy(store, "evt-3", at=T0 + 6 * DAY) is True  # still active: stacks
+    row = store.pack_get(*PACK_KEY)
+    assert (row["minutes_total"], row["expires_at"]) == (300, T0 + 65 * DAY)
+
+    store.pack_debit(*PACK_KEY, 15, now=T0 + 7 * DAY)
+    store.pack_credit(*PACK_KEY, 15)
+    assert store.pack_get(*PACK_KEY)["minutes_used"] == 0
 
 
-def test_concurrent_quota_bookings_cannot_overspend_on_postgres(store):
+def test_pack_refund_rules_on_postgres(store):
+    key = ("t1", "refund-stu", "economy")
+    _buy(store, "r-1", key=key)
+    rule = dict(max_interviews_started=1, max_minutes_used=15, rule="any")
+    assert store.pack_revoke(*key, payment_id="nope", **rule) == "not_found"
+    store.pack_debit(*key, 15, now=T0 + DAY)
+    store.pack_debit(*key, 15, now=T0 + DAY)  # a second interview: no longer refundable
+    assert store.pack_revoke(*key, payment_id="r-1", **rule) == "not_eligible"
+    assert store.pack_get(*key)["minutes_total"] == 150
+
+    other = ("t1", "refund-stu-2", "economy")
+    _buy(store, "r-2", key=other)
+    assert store.pack_revoke(*other, payment_id="r-2", **rule) == "revoked"
+    assert store.pack_revoke(*other, payment_id="r-2", **rule) == "already_revoked"
+    assert store.pack_get(*other)["minutes_total"] == 0
+
+
+def test_concurrent_pack_bookings_cannot_overspend_on_postgres(store):
+    key = ("t1", "racer", "economy")
+    _buy(store, "race-1", key=key)
     results = []
     lock = threading.Lock()
 
     def book():
-        ok = store.quota_debit("t1", "racer", "2026-10", 15, allowance=150)
+        ok = store.pack_debit(*key, 15, now=T0 + DAY)
         with lock:
             results.append(ok)
 
@@ -349,4 +388,26 @@ def test_concurrent_quota_bookings_cannot_overspend_on_postgres(store):
     for thread in threads:
         thread.join()
     assert results.count(True) == 10
-    assert store.quota_get("t1", "racer", "2026-10")["used_minutes"] == 150
+    assert store.pack_get(*key)["minutes_used"] == 150
+
+
+def test_concurrent_replays_and_stacked_purchases_on_postgres(store):
+    key = ("t1", "buyer", "economy")
+    outcomes = []
+    lock = threading.Lock()
+
+    def buy(payment_id):
+        ok = _buy(store, payment_id, key=key)
+        with lock:
+            outcomes.append(ok)
+
+    names = [f"dup-{i % 3}" for i in range(12)]  # 12 calls, 3 distinct payments, each replayed 4 times
+    threads = [threading.Thread(target=buy, args=(name,)) for name in names]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert outcomes.count(True) == 3  # each payment applied exactly once
+    row = store.pack_get(*key)
+    assert row["minutes_total"] == 450  # three stacked purchases, none lost to a race
+    assert row["expires_at"] == T0 + 90 * DAY

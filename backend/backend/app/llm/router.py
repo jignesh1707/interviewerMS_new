@@ -36,6 +36,9 @@ class ModelCandidate(BaseModel):
     input_price: float = 0.0
     output_price: float = 0.0
     priority: int | None = None
+    # Per-model request tweaks passed to the provider, for example {"omit_temperature": true, "body": {...}}.
+    # Only the Anthropic adapter reads them today; leave empty for models that need nothing special.
+    options: dict[str, Any] = Field(default_factory=dict)
 
     def cost_score(self) -> float:
         """Expected relative cost. Output tokens dominate this workload, so they are weighted higher."""
@@ -51,20 +54,40 @@ class ModelCandidate(BaseModel):
 
 
 class RouterConfig(BaseModel):
+    # `tiers` is the default profile ("economy"). `profiles` adds others, each with its own tier lists, so a plan
+    # can be served by a different set of providers and models.
     tiers: dict[str, list[ModelCandidate]] = Field(default_factory=dict)
+    profiles: dict[str, dict[str, list[ModelCandidate]]] = Field(default_factory=dict)
+    default_profile: str = "economy"
     tasks: dict[str, str] = Field(default_factory=dict)
     default_tier: str = "standard"
 
     def tier_for_task(self, task: str) -> str:
         return self.tasks.get(task, self.default_tier)
 
-    def candidates(self, tier: str) -> list[ModelCandidate]:
-        if tier not in self.tiers:
+    def profile_names(self) -> list[str]:
+        return sorted({self.default_profile, *self.profiles})
+
+    def _tiers_for(self, profile: str | None) -> dict[str, list[ModelCandidate]]:
+        if profile is None or profile == self.default_profile:
+            return self.tiers
+        if profile not in self.profiles:
+            # Never fall back to the default profile: a plan that names an unknown profile must fail, not be
+            # silently served by a different set of providers.
+            raise ValidationAppError(f"unknown model profile '{profile}'", details={"profile": profile})
+        return self.profiles[profile]
+
+    def providers_in(self, profile: str | None) -> set[str]:
+        return {candidate.provider for candidates in self._tiers_for(profile).values() for candidate in candidates}
+
+    def candidates(self, tier: str, profile: str | None = None) -> list[ModelCandidate]:
+        tiers = self._tiers_for(profile)
+        if tier not in tiers:
             raise ValidationAppError(f"unknown model tier '{tier}'", details={"tier": tier})
         return [
             candidate
             for _, candidate in sorted(
-                enumerate(self.tiers[tier]),
+                enumerate(tiers[tier]),
                 key=lambda item: item[1].sort_key(item[0]),
             )
         ]
@@ -128,6 +151,7 @@ class LLMResult:
     estimated_cost_usd: float
     latency_ms: int
     attempts: list[dict[str, Any]] = field(default_factory=list)
+    profile: str | None = None
 
     @property
     def fallback_used(self) -> bool:
@@ -191,11 +215,12 @@ class ModelRouter:
         self,
         tier: str,
         authorized: frozenset[str] | None,
+        profile: str | None = None,
     ) -> tuple[list[ModelCandidate], list[dict[str, Any]]]:
         now = time.monotonic()
         ready: list[ModelCandidate] = []
         skipped: list[dict[str, Any]] = []
-        for candidate in self.config.candidates(tier):
+        for candidate in self.config.candidates(tier, profile):
             if authorized is not None and candidate.provider not in authorized:
                 skipped.append(
                     {"provider": candidate.provider, "model": candidate.model, "reason": "not_authorized"}
@@ -221,6 +246,7 @@ class ModelRouter:
         messages: list[LLMMessage],
         *,
         tier: str | None = None,
+        profile: str | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
         authorized_providers: tuple[str, ...] | None = None,
@@ -237,7 +263,7 @@ class ModelRouter:
             )
         except ValidationError as exc:
             raise PolicyDeniedError("malformed model request", details={"errors": exc.errors()}) from exc
-        return await self._complete_validated(request, tier=tier)
+        return await self._complete_validated(request, tier=tier, profile=profile)
 
     async def complete_request(self, request: ModelRequest) -> LLMResult:
         if not known_task(request.task, self.config.tasks):
@@ -247,7 +273,9 @@ class ModelRouter:
             )
         return await self._complete_validated(request)
 
-    async def _complete_validated(self, request: ModelRequest, *, tier: str | None = None) -> LLMResult:
+    async def _complete_validated(
+        self, request: ModelRequest, *, tier: str | None = None, profile: str | None = None
+    ) -> LLMResult:
         assert_request_safe(request, self._secret_values())
         if not known_task(request.task, self.config.tasks):
             raise PolicyDeniedError(
@@ -256,7 +284,7 @@ class ModelRouter:
             )
         resolved_tier = tier or self.config.tier_for_task(request.task)
         authorized = self._authorized_set(request)
-        ready, skipped = self._plan(resolved_tier, authorized)
+        ready, skipped = self._plan(resolved_tier, authorized, profile)
         attempts: list[dict[str, Any]] = [dict(skip, stage="plan") for skip in skipped]
 
         if not ready:
@@ -273,12 +301,15 @@ class ModelRouter:
             started = time.monotonic()
             for attempt in range(1, self.settings.llm_max_attempts_per_provider + 1):
                 try:
+                    # Providers that have no options keep their original call shape.
+                    extra = {"options": candidate.options} if candidate.options else {}
                     with bound_provider_call(task=request.task, provider=candidate.provider, model=candidate.model):
                         response = await provider.complete(
                             request.llm_messages(),
                             model=candidate.model,
                             temperature=self.settings.llm_temperature if request.temperature is None else request.temperature,
                             max_tokens=request.max_tokens or self.settings.llm_max_output_tokens,
+                            **extra,
                         )
                     response = validate_provider_response(response, self._secret_values())
                 except ProviderCallError as exc:
@@ -380,6 +411,7 @@ class ModelRouter:
                         estimated_cost_usd=cost,
                         latency_ms=latency_ms,
                         attempts=attempts,
+                        profile=profile or self.config.default_profile,
                     )
 
             auth_error = isinstance(last_error, ProviderCallError) and last_error.auth_error
@@ -407,6 +439,7 @@ class ModelRouter:
         messages: list[LLMMessage],
         *,
         tier: str | None = None,
+        profile: str | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
         authorized_providers: tuple[str, ...] | None = None,
@@ -415,6 +448,7 @@ class ModelRouter:
             task,
             messages,
             tier=tier,
+            profile=profile,
             temperature=temperature,
             max_tokens=max_tokens,
             authorized_providers=authorized_providers,
@@ -459,6 +493,7 @@ class ModelRouter:
                 ]
                 for name in self.config.tiers
             },
+            "profiles": {name: sorted(self.config.providers_in(name)) for name in self.config.profile_names()},
             "tasks": self.config.tasks,
             "usage": {
                 "calls": self.usage.calls,

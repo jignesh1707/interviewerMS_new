@@ -54,6 +54,10 @@ class TimeLimitError(ConflictError):
     code = "time_limit_reached"
 
 
+class RefundNotAllowedError(ConflictError):
+    code = "refund_not_allowed"
+
+
 class ProviderError(AppError):
     status_code = 502
     code = "provider_error"

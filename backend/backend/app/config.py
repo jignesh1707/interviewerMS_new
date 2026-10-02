@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     retention_days: int = 0  # purge interviews older than this many days; 0 = keep forever
     retention_sweep_minutes: int = 60
     llm_disabled_providers: str = ""  # e.g. "deepseek" to keep candidate data away from a vendor
+    # Strip names, contact details, links, addresses and work-authorization lines from the copy of a resume or
+    # answer that is sent to an AI provider (stored data is not changed). Turn off only for debugging.
+    redact_pii_for_llm: bool = True
     require_consent: bool = False  # require consent_to_ai_processing=true when creating interviews
 
     # Request size limits.

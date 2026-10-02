@@ -1,18 +1,24 @@
-# Plans, quotas and interview lengths. Only used when PLANS_ENABLED=true.
+# Plans, packs and interview lengths. Only used when PLANS_ENABLED=true. Edit and restart to apply.
 #
-# One student's allowance is `included_minutes` per `period`. Booking an interview debits its full length,
-# so 150 minutes is 10 x 15, 8 x 20 or 6 x 25 minute interviews (any mix that adds up).
-#   period: monthly  -> the balance resets on the 1st (UTC); unused minutes do not roll over.
-#   period: none     -> a single balance for the student's lifetime (a one-time pack).
-# Top-ups bought outside this plan are added through POST /api/v1/quotas/{external_ref}/grant.
+# A student buys a PACK: `pack_minutes` that expire `pack_days` after purchase. The main app tells this service
+# about each payment (POST /api/v1/packs/activate); the service owns the balance, the days left and the refund rule.
+#   - Booking an interview debits its full length, so 150 minutes is 10 x 15, 8 x 20 or 6 x 25 minute interviews.
+#   - Buying again while the pack is still active STACKS: minutes are added and the expiry is pushed back by
+#     `pack_days` (no days are lost). Buying after the pack expired or was used up starts a fresh pack.
+#   - Nobody gets minutes without a recorded payment: no pack means no interviews (trial users get none).
 #
-# `profiles` fixes what each interview length contains, so a short interview never asks a long one's questions.
-# Every length a plan allows must have a profile.
+# `llm_profile` picks the model list from models.yaml. `llm_allowed_providers` is a hard promise about where a
+# student's data may go: the router refuses any provider not on the list, whatever models.yaml says. If you change
+# the providers here, update the privacy policy and consent text in the main app too.
 #
-# `grace_seconds`: extra time after the length runs out before answers are refused (covers the last answer
-# being recorded). The student can always call finish afterwards to get the report.
+# `refund`: a purchase can be refunded only while the student has barely used it. rule "any" = refundable while EITHER
+# fewer than/equal `max_interviews_started` interviews have been started OR `max_minutes_used` minutes or fewer used;
+# rule "all" = both must hold. Used minutes count the booked length of each interview.
+#
+# `profiles` fixes what each interview length contains. Every length a plan allows must have a profile.
+# `grace_seconds`: extra time after the length runs out before answers are refused.
 
-default_plan: standard
+default_plan: economy
 grace_seconds: 60
 
 profiles:
@@ -21,8 +27,19 @@ profiles:
   25: {question_count: 12, max_followups: 3}
 
 plans:
-  standard:
-    included_minutes: 150
-    period: monthly
+  economy:          # $10 a month
+    pack_minutes: 150
+    pack_days: 30
     durations: [15, 20, 25]
     default_duration: 15
+    llm_profile: economy
+    refund: {max_interviews_started: 1, max_minutes_used: 15, rule: any}
+
+  premium:          # $20 a month; US providers only (never DeepSeek)
+    pack_minutes: 250
+    pack_days: 30
+    durations: [15, 20, 25]
+    default_duration: 15
+    llm_profile: premium
+    llm_allowed_providers: [anthropic, openai]
+    refund: {max_interviews_started: 1, max_minutes_used: 15, rule: any}
