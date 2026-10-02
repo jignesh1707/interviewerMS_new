@@ -6,6 +6,9 @@ from app.llm.providers.base import LLMMessage, ProviderCallError, ProviderRespon
 from app.llm.safety import is_approved_endpoint, redact_secrets, require_boundary_permit
 
 
+RESERVED_FIELDS = frozenset({"model", "messages", "max_tokens", "system", "stream"})
+
+
 class AnthropicClient:
     def __init__(self, name: str, base_url: str, api_key: str, timeout: float, version: str = "2023-06-01") -> None:
         self.name = name
@@ -28,6 +31,7 @@ class AnthropicClient:
         model: str,
         temperature: float,
         max_tokens: int,
+        options: dict[str, Any] | None = None,
     ) -> ProviderResponse:
         require_boundary_permit()
         if not self.configured:
@@ -43,14 +47,22 @@ class AnthropicClient:
         if not conversation:
             raise ProviderCallError("anthropic requires at least one user message", retryable=False)
 
+        options = options or {}
         payload: dict[str, Any] = {
             "model": model,
             "max_tokens": max_tokens,
-            "temperature": temperature,
             "messages": conversation,
         }
+        # Newer Claude models reject a non-default temperature, so models.yaml can switch it off per model.
+        if not options.get("omit_temperature"):
+            payload["temperature"] = temperature
         if system_parts:
             payload["system"] = "\n\n".join(system_parts)
+        # Extra request fields from models.yaml (for example thinking and effort settings). They can never replace
+        # the fields the router controls.
+        for key, value in (options.get("body") or {}).items():
+            if key not in RESERVED_FIELDS:
+                payload[key] = value
 
         headers = {
             "x-api-key": self._api_key,

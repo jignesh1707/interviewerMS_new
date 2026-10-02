@@ -108,45 +108,90 @@ When done, call `POST /api/v1/interviews/{id}/finish` to receive the report, or 
 
 `routing_trace` tells you which provider and tier served each step, and how many failovers happened.
 
-## 4b. Plans, student quota and interview length
+## 4b. Plans, packs and interview length
 
-Off by default. Set `PLANS_ENABLED=true` and edit `backend/plans.yaml` (no code change, restart to apply).
+Off by default. Set `PLANS_ENABLED=true` and edit `backend/plans.yaml` and `backend/models.yaml` (no code change; restart to apply).
+
+A student buys a **pack** of interview minutes that expires after a number of days. The main app tells this service about each payment; **this service owns the balance, the days left and the refund rule**. There are two plans in the shipped config:
+
+| Plan | Pack | AI providers that may see the student's data |
+|---|---|---|
+| `economy` ($10) | 150 minutes, 30 days | DeepSeek first, then OpenRouter, OpenAI, Anthropic |
+| `premium` ($20) | 250 minutes, 30 days | Anthropic, then OpenAI. **Never DeepSeek.** |
 
 ```yaml
+# plans.yaml
 profiles:                       # what each interview length contains
   15: {question_count: 7, max_followups: 2}
   20: {question_count: 9, max_followups: 3}
   25: {question_count: 12, max_followups: 3}
 plans:
-  standard:
-    included_minutes: 150       # 10 x 15, 8 x 20 or 6 x 25 minute interviews, or any mix
-    period: monthly             # "none" = one lifetime balance (a one-time pack)
+  premium:
+    pack_minutes: 250
+    pack_days: 30
     durations: [15, 20, 25]
     default_duration: 15
+    llm_profile: premium                      # a profile in models.yaml
+    llm_allowed_providers: [anthropic, openai]  # a hard promise, enforced on every AI call
+    refund: {max_interviews_started: 1, max_minutes_used: 15, rule: any}
 ```
 
-When enabled:
+### The flow, from the main app's backend
 
-- **Student id is required.** Send `external_ref` on create. The quota is kept per tenant and `external_ref`.
+1. **A student pays.** After you have verified Stripe's own webhook, call (from your backend, never from a browser):
+
+   ```bash
+   curl -sX POST http://localhost:8080/api/v1/packs/activate -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+     -d '{"external_ref": "STUDENT_HASH", "plan": "economy", "payment_id": "evt_1Abc...", "purchased_at": "2026-10-02T12:00:00Z"}'
+   # {"applied": true, "pack": {"plan":"economy","active":true,"minutes_total":150,"minutes_remaining":150,
+   #   "expires_at":"2026-11-01T12:00:00+00:00","days_remaining":30,"refund_eligible":true, ...}}
+   ```
+
+   - `payment_id` is your Stripe event or payment id. **A replay is applied once** (`"applied": false`), so webhook retries are safe.
+   - `purchased_at` is when the student paid (with a timezone), so expiry is the same however late the call arrives.
+   - **Buying again stacks.** While the pack is still active, the new minutes are added and the expiry is pushed back by another `pack_days` (no days are lost). If the old pack expired or was used up, a fresh pack starts at the purchase date and leftovers are forfeited.
+   - Trial users get nothing: only call this for a real payment.
+2. **The student clicks "Start interview"** in the main app. Ask the service first, to decide what to show:
+
+   ```bash
+   curl -s http://localhost:8080/api/v1/packs/STUDENT_HASH -H "X-API-Key: $KEY"
+   # {"external_ref": "...", "packs": [{"plan":"economy","active":true,"minutes_remaining":135,"days_remaining":29,...},
+   #                                   {"plan":"premium","active":false,...}]}
+   ```
+
+   If no plan is active, show "buy a pack". Otherwise create the interview with the `plan` the student chose. The service also refuses at create, so the check cannot be skipped.
+3. **Create the interview** (`POST /api/v1/interviews`, or `/upload`) with `external_ref`, `plan` and `config.duration_minutes`. Booking debits the full length. If there is nothing to spend you get **402** `quota_exceeded` with `details.reason` of `no_active_pack`, `pack_expired`, `no_minutes_left` or `insufficient_minutes`, plus `remaining_minutes`, `expires_at` and `days_remaining`. If creation fails (for example every AI provider is down) the minutes are given back.
+4. **Refund.** Ask the service, which applies the refund rule (`refund_eligible` in the balance shows the answer in advance):
+
+   ```bash
+   curl -sX POST http://localhost:8080/api/v1/packs/revoke -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+     -d '{"external_ref": "STUDENT_HASH", "plan": "economy", "payment_id": "evt_1Abc..."}'
+   ```
+
+   Success removes that purchase's minutes and days (stacked purchases are refunded one at a time). If the student has used the pack too much it returns **409** `refund_not_allowed` and you must not refund. A chargeback is the bank's decision and cannot be refused here; the interview records (times, minutes used) are your evidence.
+
+The refund rule in `plans.yaml` is `rule: any`: refundable while **either** at most `max_interviews_started` interview has been started **or** at most `max_minutes_used` booked minutes are used. `rule: all` needs both. Used minutes are the booked length, not the time actually spoken.
+
+`GET /api/v1/plans` returns the catalog (pack size, days, lengths, refund rule) and, for each plan, `llm_providers`: the companies that may process that plan's data. Use it to render pricing and the consent screen so they always match what the service really does.
+
+### Interview length, deadline and caps
+
+- **Student id is required.** Send `external_ref` on create (use a stable id; hashing it with a secret pepper keeps raw user ids out of this service, but never rotate the pepper or balances and erasure stop matching).
 - **Choose a length** with `config.duration_minutes` (default: the plan's default). A length the plan does not allow returns 422. The length sets `question_count` and `max_followups`; values you send for those are replaced.
-- **Booking debits the full length** when the interview is created. If the student does not have enough minutes the call returns **402** with `code: quota_exceeded` and `details.remaining_minutes`. If creation fails (for example the question model is down) the minutes are given back.
-- **Server-side deadline.** The create response has `interview.duration_minutes` and `interview.deadline_at` (length plus `grace_seconds`, counted from when the questions are ready). After it, answers return **409** `time_limit_reached`; `finish` still works so the student gets the report. Audio is refused before any transcription work is spent. The status (create, `GET .../status`) also carries `grace_seconds` and `seconds_remaining` (to `deadline_at`, measured by the server, so a countdown does not depend on the student's clock). The nominal end to show the student is `seconds_remaining - grace_seconds`; the demo UI's countdown (`frontend/frontend/src/countdown.ts`) does exactly that, warning at 5 minutes and 1 minute, allowing the grace period, then disabling answer input at the deadline.
+- **Server-side deadline.** The create response has `interview.duration_minutes` and `interview.deadline_at` (length plus `grace_seconds`, counted from when the questions are ready). After it, answers return **409** `time_limit_reached`; `finish` still works so the student gets the report. Audio is refused before any transcription work is spent. The status (create, `GET .../status`) also carries `grace_seconds` and `seconds_remaining` (to `deadline_at`, measured by the server, so a countdown does not depend on the student's clock). The nominal end to show the student is `seconds_remaining - grace_seconds`; the demo UI's countdown (`frontend/frontend/src/countdown.ts`) does exactly that.
 - **Per-answer caps** (always on): `MAX_ANSWER_SECONDS` (180) and `MAX_TRANSCRIPT_CHARS` (4000). Longer answers return 422 and are not stored.
-- `POST /api/v1/interviews` and `/upload` also accept an optional `plan` (a name from `plans.yaml`; default plan otherwise).
 
-Balance and top-ups:
+### Which AI providers see student data
 
-```bash
-curl -s  http://localhost:8080/api/v1/quotas/STUDENT_ID -H "X-API-Key: $KEY"
-# {"plan":"standard","period":"monthly","period_key":"2026-10","included_minutes":150,
-#  "bonus_minutes":0,"used_minutes":45,"remaining_minutes":105,"allowed_durations":[15,20,25]}
+- **Profiles.** `models.yaml` has an `economy` profile (the top-level `tiers`) and a `premium` profile, each with its own provider and model lists. Fallbacks never leave a profile, so a Premium interview cannot fall through to DeepSeek.
+- **Hard allow-list.** A plan's `llm_allowed_providers` is passed with every AI call and the router refuses anything else, whatever `models.yaml` says. At startup the service **refuses to start** if a plan names a profile that does not exist, or its profile lists a provider the plan forbids.
+- **Data minimization.** Before a resume or an answer goes to an AI provider the service removes names, emails, phone numbers, links, addresses, ID numbers and work-authorization lines (OPT, H-1B, visa sponsorship, citizenship...). `REDACT_PII_FOR_LLM=true` (default). Only the copy for the provider is changed; stored text and analytics use the original. This is best-effort minimization, **not anonymization**: employers, schools and anything a student says aloud can still identify them.
+- **If you change providers, update the privacy policy and consent text in the main app.**
+- Run `python -m app.llm_smoke --profile premium` (with the real keys set) to send one tiny request to each model and check keys, model names and per-model options before launch.
 
-curl -sX POST http://localhost:8080/api/v1/quotas/STUDENT_ID/grant -H "X-API-Key: $KEY"   -H "Content-Type: application/json" -d '{"minutes": 30}'     # add minutes for the current period
-```
+**Per-student rate limits** (independent of `PLANS_ENABLED`): once an interview has an `external_ref`, its LLM and speech-backed calls (create, answer, audio answer, finish) also count against that student: `STUDENT_RATE_LIMIT_PER_MINUTE` (30) and `STUDENT_DAILY_BUDGET` (200 per UTC day), `0` to turn either off. They are kept per tenant and student, shared across machines through Redis, and return 429 like the tenant limits. The standalone `/speech/transcribe` and `/speech/synthesize` calls carry no student id, so only the tenant limits cover them.
 
-**Per-student rate limits** (independent of `PLANS_ENABLED`): once an interview has an `external_ref`, its LLM and speech-backed calls (create, answer, audio answer, finish) also count against that student: `STUDENT_RATE_LIMIT_PER_MINUTE` (30) and `STUDENT_DAILY_BUDGET` (200 per UTC day), `0` to turn either off. They are kept per tenant and student, shared across machines through Redis, and return 429 like the tenant limits. One student cannot use up the tenant's shared limits on their own, but the tenant limits still apply on top. The standalone `/speech/transcribe` and `/speech/synthesize` calls carry no student id, so only the tenant limits cover them.
-
-Billing stays in your main app: take the payment there, then call `grant` for any top-up. Quota rows are keyed by `external_ref` and are not removed by the erase-by-user endpoint, so erasing a student does not reset their balance.
+Pack rows are keyed by `external_ref` and are not removed by the erase-by-user endpoint, so erasing a student's interviews does not reset or refund their balance.
 
 ## 5. Webhooks
 

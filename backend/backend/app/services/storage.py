@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -285,50 +286,147 @@ class Store:
             (interview_id, event_type, json.dumps(payload or {}), utc_now()),
         )
 
-    # ------------------------------------------------------------------ quotas
+    # ------------------------------------------------------------------ packs
+    # A pack is a student's purchased interview minutes: one wallet per (tenant, student, plan) with an expiry.
+    # Times are epoch seconds so stacking is plain integer arithmetic on both SQLite and Postgres.
 
-    def _ensure_quota_row(self, tenant_id: str, external_ref: str, period: str) -> None:
-        self._execute(
-            "INSERT INTO quotas (tenant_id, external_ref, period_key, used_minutes, bonus_minutes, updated_at) "
-            "VALUES (?, ?, ?, 0, 0, ?) ON CONFLICT (tenant_id, external_ref, period_key) DO NOTHING",
-            (tenant_id, external_ref, period, utc_now()),
+    _ACTIVE = "expires_at > ? AND minutes_total > minutes_used"
+
+    def pack_get(self, tenant_id: str, external_ref: str, plan: str) -> dict[str, Any] | None:
+        return self._query_one(
+            "SELECT minutes_total, minutes_used, interviews_started, expires_at FROM packs "
+            "WHERE tenant_id = ? AND external_ref = ? AND plan = ?",
+            (tenant_id, external_ref, plan),
         )
 
-    def quota_get(self, tenant_id: str, external_ref: str, period: str) -> dict[str, int]:
-        row = self._query_one(
-            "SELECT used_minutes, bonus_minutes FROM quotas WHERE tenant_id = ? AND external_ref = ? AND period_key = ?",
-            (tenant_id, external_ref, period),
-        )
-        return {"used_minutes": int(row["used_minutes"]), "bonus_minutes": int(row["bonus_minutes"])} if row else {
-            "used_minutes": 0,
-            "bonus_minutes": 0,
-        }
+    def pack_activate(
+        self,
+        tenant_id: str,
+        external_ref: str,
+        plan: str,
+        *,
+        payment_id: str,
+        minutes: int,
+        days: int,
+        purchased_at: int,
+    ) -> bool:
+        """Apply one purchase. Returns False when this payment id was already applied (a replayed event).
 
-    def quota_debit(self, tenant_id: str, external_ref: str, period: str, minutes: int, *, allowance: int) -> bool:
-        """Book `minutes` if the student still has them. One conditional UPDATE, so concurrent bookings cannot overspend."""
-        self._ensure_quota_row(tenant_id, external_ref, period)
+        A pack that is still active at `purchased_at` is stacked: minutes are added and the old expiry is pushed back
+        by `days`. Otherwise (never bought, expired, or all minutes used) a fresh pack starts at the purchase date and
+        any leftover is forfeited. The wallet change is one UPDATE, so concurrent purchases cannot lose each other.
+        """
+        now_iso = utc_now()
+        length = days * 86400
+        with self.db.transaction() as tx:
+            inserted = tx.execute_count(
+                "INSERT INTO pack_payments (tenant_id, payment_id, external_ref, plan, minutes, days, purchased_at, "
+                "revoked_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?) "
+                "ON CONFLICT (tenant_id, payment_id) DO NOTHING",
+                (tenant_id, payment_id, external_ref, plan, minutes, days, purchased_at, now_iso),
+            )
+            if inserted == 0:
+                return False
+            tx.execute(
+                "INSERT INTO packs (tenant_id, external_ref, plan, minutes_total, minutes_used, interviews_started, "
+                "expires_at, updated_at) VALUES (?, ?, ?, 0, 0, 0, 0, ?) "
+                "ON CONFLICT (tenant_id, external_ref, plan) DO NOTHING",
+                (tenant_id, external_ref, plan, now_iso),
+            )
+            active = self._ACTIVE
+            tx.execute(
+                "UPDATE packs SET "
+                f"minutes_total = CASE WHEN {active} THEN minutes_total + ? ELSE ? END, "
+                f"minutes_used = CASE WHEN {active} THEN minutes_used ELSE 0 END, "
+                f"interviews_started = CASE WHEN {active} THEN interviews_started ELSE 0 END, "
+                f"expires_at = CASE WHEN {active} THEN expires_at + ? ELSE ? END, "
+                "updated_at = ? WHERE tenant_id = ? AND external_ref = ? AND plan = ?",
+                (
+                    purchased_at, minutes, minutes,
+                    purchased_at,
+                    purchased_at,
+                    purchased_at, length, purchased_at + length,
+                    now_iso, tenant_id, external_ref, plan,
+                ),
+            )
+        return True
+
+    def pack_debit(self, tenant_id: str, external_ref: str, plan: str, minutes: int, *, now: int) -> bool:
+        """Book `minutes` if the pack is unexpired and has them. One conditional UPDATE, so bookings cannot overspend."""
         changed = self.db.execute_count(
-            "UPDATE quotas SET used_minutes = used_minutes + ?, updated_at = ? "
-            "WHERE tenant_id = ? AND external_ref = ? AND period_key = ? "
-            "AND used_minutes + ? <= ? + bonus_minutes",
-            (minutes, utc_now(), tenant_id, external_ref, period, minutes, allowance),
+            "UPDATE packs SET minutes_used = minutes_used + ?, interviews_started = interviews_started + 1, "
+            "updated_at = ? WHERE tenant_id = ? AND external_ref = ? AND plan = ? "
+            "AND expires_at > ? AND minutes_total - minutes_used >= ?",
+            (minutes, utc_now(), tenant_id, external_ref, plan, now, minutes),
         )
         return changed == 1
 
-    def quota_credit(self, tenant_id: str, external_ref: str, period: str, minutes: int) -> None:
+    def pack_credit(self, tenant_id: str, external_ref: str, plan: str, minutes: int) -> None:
+        """Undo a debit (the interview could not be created). Never goes below zero."""
         self._execute(
-            "UPDATE quotas SET used_minutes = CASE WHEN used_minutes > ? THEN used_minutes - ? ELSE 0 END, "
-            "updated_at = ? WHERE tenant_id = ? AND external_ref = ? AND period_key = ?",
-            (minutes, minutes, utc_now(), tenant_id, external_ref, period),
+            "UPDATE packs SET "
+            "minutes_used = CASE WHEN minutes_used > ? THEN minutes_used - ? ELSE 0 END, "
+            "interviews_started = CASE WHEN interviews_started > 0 THEN interviews_started - 1 ELSE 0 END, "
+            "updated_at = ? WHERE tenant_id = ? AND external_ref = ? AND plan = ?",
+            (minutes, minutes, utc_now(), tenant_id, external_ref, plan),
         )
 
-    def quota_add_bonus(self, tenant_id: str, external_ref: str, period: str, minutes: int) -> None:
-        self._ensure_quota_row(tenant_id, external_ref, period)
-        self._execute(
-            "UPDATE quotas SET bonus_minutes = bonus_minutes + ?, updated_at = ? "
-            "WHERE tenant_id = ? AND external_ref = ? AND period_key = ?",
-            (minutes, utc_now(), tenant_id, external_ref, period),
-        )
+    def pack_revoke(
+        self,
+        tenant_id: str,
+        external_ref: str,
+        plan: str,
+        *,
+        payment_id: str,
+        max_interviews_started: int,
+        max_minutes_used: int,
+        rule: str = "any",
+    ) -> str:
+        """Take one purchase back (a refund) if the refund rule still allows it.
+
+        Returns "revoked", "not_found", "already_revoked" or "not_eligible". The eligibility test is part of the
+        wallet UPDATE, so an interview started a moment earlier is seen. Minutes already used stay on the books.
+        """
+        joiner = "AND" if rule == "all" else "OR"
+
+        class _AlreadyRevoked(Exception):
+            pass
+
+        try:
+            with self.db.transaction() as tx:
+                rows = tx.query_all(
+                    "SELECT minutes, days, revoked_at, external_ref, plan FROM pack_payments "
+                    "WHERE tenant_id = ? AND payment_id = ?",
+                    (tenant_id, payment_id),
+                )
+                if not rows or rows[0]["external_ref"] != external_ref or rows[0]["plan"] != plan:
+                    return "not_found"
+                payment = rows[0]
+                if payment["revoked_at"] is not None:
+                    return "already_revoked"
+                changed = tx.execute_count(
+                    "UPDATE packs SET "
+                    "minutes_total = CASE WHEN minutes_total - ? > minutes_used THEN minutes_total - ? "
+                    "ELSE minutes_used END, expires_at = expires_at - ?, updated_at = ? "
+                    "WHERE tenant_id = ? AND external_ref = ? AND plan = ? "
+                    f"AND (interviews_started <= ? {joiner} minutes_used <= ?)",
+                    (
+                        payment["minutes"], payment["minutes"], payment["days"] * 86400, utc_now(),
+                        tenant_id, external_ref, plan, max_interviews_started, max_minutes_used,
+                    ),
+                )
+                if changed == 0:
+                    return "not_eligible"
+                marked = tx.execute_count(
+                    "UPDATE pack_payments SET revoked_at = ? WHERE tenant_id = ? AND payment_id = ? "
+                    "AND revoked_at IS NULL",
+                    (int(time.time()), tenant_id, payment_id),
+                )
+                if marked == 0:  # a concurrent refund won: undo our wallet change
+                    raise _AlreadyRevoked
+        except _AlreadyRevoked:
+            return "already_revoked"
+        return "revoked"
 
     def list_events(self, interview_id: str, limit: int = 100) -> list[dict[str, Any]]:
         rows = self._query_all(

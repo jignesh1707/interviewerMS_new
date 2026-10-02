@@ -5,7 +5,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api import routes_interviews, routes_quotas, routes_speech, routes_system
+from app.api import routes_interviews, routes_packs, routes_speech, routes_system
 from app.config import get_settings
 from app.core.errors import AppError
 from app.core.limits import BodyLimitMiddleware
@@ -17,6 +17,13 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    if settings.plans_enabled:
+        # Refuse to start if a plan names a model profile that does not exist, or one that lists a provider the plan
+        # promises never to use (for example DeepSeek in the Premium profile).
+        from app.core.plans import get_plans, validate_against_router
+        from app.llm.router import load_router_config
+
+        validate_against_router(get_plans(), load_router_config(settings.models_config_path))
     task = asyncio.create_task(_retention_loop()) if settings.retention_days > 0 else None
     try:
         yield
@@ -73,7 +80,8 @@ async def unhandled_error_handler(request: Request, exc: Exception) -> JSONRespo
 
 app.include_router(routes_system.router, prefix="/api/v1")
 app.include_router(routes_interviews.router, prefix="/api/v1")
-app.include_router(routes_quotas.router, prefix="/api/v1")
+app.include_router(routes_packs.router, prefix="/api/v1")
+app.include_router(routes_packs.plans_router, prefix="/api/v1")
 app.include_router(routes_speech.router, prefix="/api/v1")
 
 

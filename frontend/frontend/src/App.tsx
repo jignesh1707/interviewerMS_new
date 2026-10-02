@@ -166,6 +166,7 @@ export default function App() {
     jdFile: File | null
     callbackUrl: string
     externalRef: string
+    plan: string
     durationMinutes: string
   }) => {
     setBusy(true)
@@ -186,6 +187,7 @@ export default function App() {
         if (form.jdText) payload.append('jd_text', form.jdText)
         if (form.callbackUrl) payload.append('callback_url', form.callbackUrl)
         if (form.externalRef) payload.append('external_ref', form.externalRef)
+        if (form.plan) payload.append('plan', form.plan)
         payload.append('config_json', JSON.stringify(config))
         if (form.resumeFile) payload.append('resume_file', form.resumeFile)
         if (form.jdFile) payload.append('jd_file', form.jdFile)
@@ -198,6 +200,7 @@ export default function App() {
           jd_text: form.jdText || undefined,
           callback_url: form.callbackUrl || undefined,
           external_ref: form.externalRef || undefined,
+          plan: form.plan || undefined,
           config,
         })
       }
@@ -493,6 +496,7 @@ function SetupForm({
     jdFile: File | null
     callbackUrl: string
     externalRef: string
+    plan: string
     durationMinutes: string
   }) => void
 }) {
@@ -505,6 +509,7 @@ function SetupForm({
   const [jdFile, setJdFile] = useState<File | null>(null)
   const [callbackUrl, setCallbackUrl] = useState('')
   const [externalRef, setExternalRef] = useState('')
+  const [plan, setPlan] = useState('')
   const [durationMinutes, setDurationMinutes] = useState('')
 
   return (
@@ -540,6 +545,10 @@ function SetupForm({
             onChange={(event) => setExternalRef(event.target.value)}
             placeholder="required when plans are enabled"
           />
+        </label>
+        <label>
+          Plan
+          <input value={plan} onChange={(event) => setPlan(event.target.value)} placeholder="economy or premium" />
         </label>
         <label>
           Length (minutes)
@@ -583,6 +592,7 @@ function SetupForm({
             jdFile,
             callbackUrl,
             externalRef,
+            plan,
             durationMinutes,
           })
         }

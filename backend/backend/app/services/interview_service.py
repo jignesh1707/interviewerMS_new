@@ -2,6 +2,7 @@ import asyncio
 import os
 import shutil
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -9,12 +10,14 @@ from typing import Any
 from app.config import get_settings
 from app.core.errors import AllProvidersFailedError, ConflictError, TimeLimitError, ValidationAppError
 from app.core.logging import get_logger
+from app.core.plans import get_plans
 from app.core.url_safety import validate_callback_url
 from app.llm.providers.base import LLMMessage
 from app.llm.router import ModelRouter, get_router
 from app.llm.safety import redact_secrets
 from app.llm.tasks import LLMTask
 from app.prompts.guard import clamp_scores, detect_injection
+from app.prompts.redact import redact_resume, redact_text
 from app.voice.audio import safe_audio_suffix
 from app.prompts.analysis import build_answer_analysis_messages, build_coaching_messages
 from app.prompts.questions import build_followup_messages, build_question_generation_messages, build_resume_summary_messages
@@ -25,11 +28,22 @@ from app.prompts.report import (
 )
 from app.schemas.interview import CreateInterviewRequest
 from app.services import document_parser as parser
-from app.services.quota import QuotaService, Reservation
+from app.services.packs import PackService, Reservation
 from app.services.storage import AsyncStore, Store, get_async_store
 from app.services.text_analysis import aggregate_heuristic_scores, analyze_transcript, heuristic_score
 
 logger = get_logger(__name__)
+
+
+@dataclass(frozen=True)
+class LLMPolicy:
+    """Where an interview's data may be sent: a model profile and an optional hard list of allowed providers."""
+
+    profile: str | None = None
+    allowed_providers: tuple[str, ...] | None = None
+
+
+NO_POLICY = LLMPolicy()
 
 
 def _restrict(path: Path, mode: int) -> None:
@@ -46,7 +60,7 @@ class InterviewService:
         self.store = store or get_async_store()
         self.router = router or get_router()
         self.settings = get_settings()
-        self.quota = QuotaService(self.store)
+        self.packs = PackService(self.store)
 
     async def create_interview(
         self,
@@ -61,7 +75,7 @@ class InterviewService:
         """Create an interview. With plans enabled, book the student's minutes first and give them back on failure."""
         reservation: Reservation | None = None
         if self.settings.plans_enabled:
-            reservation = await self.quota.reserve(
+            reservation = await self.packs.reserve(
                 tenant_id or "default", payload.external_ref, payload.plan, payload.config.duration_minutes
             )
             payload = payload.model_copy(
@@ -77,7 +91,7 @@ class InterviewService:
             )
         except BaseException:
             if reservation is not None:
-                await asyncio.shield(self.quota.refund(reservation))
+                await asyncio.shield(self.packs.refund(reservation))
             raise
 
     async def _create_interview(
@@ -135,12 +149,16 @@ class InterviewService:
                     interview_id, "integrity.possible_prompt_injection", {"source": source, "phrases": flags}
                 )
 
+        policy = (
+            LLMPolicy(reservation.llm_profile, reservation.llm_allowed_providers) if reservation else NO_POLICY
+        )
         resume_narrative = None
         if resume_text:
             narrative, _ = await self._try_llm_json(
                 LLMTask.RESUME_SUMMARY,
-                build_resume_summary_messages(resume_text),
+                build_resume_summary_messages(self._for_llm_resume(resume_text, payload.candidate_name)),
                 interview_id,
+                policy,
             )
             resume_narrative = narrative
 
@@ -152,6 +170,7 @@ class InterviewService:
                 match=match,
                 config=config,
                 resume_narrative=resume_narrative,
+                policy=policy,
             )
         except AllProvidersFailedError as exc:
             await self.store.update_interview(interview_id, status="failed", error=str(exc))
@@ -165,6 +184,7 @@ class InterviewService:
             )
             config.update(
                 plan=reservation.plan,
+                llm_profile=reservation.llm_profile,
                 charged_minutes=reservation.minutes,
                 grace_seconds=reservation.grace_seconds,
                 deadline_at=deadline.isoformat(),
@@ -202,7 +222,9 @@ class InterviewService:
         match: dict[str, Any],
         config: dict[str, Any],
         resume_narrative: dict[str, Any] | None,
+        policy: "LLMPolicy" = None,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        policy = policy or NO_POLICY
         focus = list(config.get("focus_areas") or [])
         if resume_narrative:
             focus += resume_narrative.get("possible_weaknesses", [])[:3]
@@ -220,6 +242,8 @@ class InterviewService:
                 focus_areas=focus,
             ),
             max_tokens=self.settings.llm_max_output_tokens,
+            profile=policy.profile,
+            authorized_providers=policy.allowed_providers,
         )
 
         raw_questions = payload.get("questions") or []
@@ -254,6 +278,7 @@ class InterviewService:
             "model": result.model,
             "fallbacks": max(0, len(result.attempts) - 1),
             "cost_usd": result.estimated_cost_usd,
+            "profile": getattr(result, "profile", None),
         }
         return questions, routing
 
@@ -291,17 +316,21 @@ class InterviewService:
         injection_flags: list[str] = []
         router_trace: dict[str, Any] = {}
         config = interview.get("config") or {}
+        policy = self._policy_for(config)
+        # The copy of the answer that goes to an AI provider; the stored transcript and the metrics use the original.
+        llm_transcript = self._for_llm_text(transcript, interview.get("candidate_name"))
 
         if config.get("analyze_per_answer", True):
             analysis, routing = await self._try_llm_json(
                 LLMTask.ANSWER_ANALYSIS,
                 build_answer_analysis_messages(
                     question=question_text,
-                    transcript=transcript,
+                    transcript=llm_transcript,
                     metrics=metrics,
                     heuristic_scores=heuristics,
                 ),
                 interview_id,
+                policy,
             )
             if routing:
                 router_trace["analysis"] = routing
@@ -334,10 +363,11 @@ class InterviewService:
                 LLMTask.FOLLOWUP_GENERATION,
                 build_followup_messages(
                     question=question_text,
-                    transcript=transcript,
+                    transcript=llm_transcript,
                     gaps=list((analysis or {}).get("missing_evidence") or []),
                 ),
                 interview_id,
+                policy,
             )
             if routing:
                 router_trace["followup"] = routing
@@ -558,6 +588,7 @@ class InterviewService:
         )
         match = interview.get("match_analysis") or {}
         trace: dict[str, Any] = {}
+        policy = self._policy_for(interview.get("config") or {})
 
         scorecard, routing = await self._try_llm_json(
             LLMTask.FINAL_SCORING,
@@ -568,6 +599,7 @@ class InterviewService:
                 match=match,
             ),
             interview_id,
+            policy,
         )
         if routing:
             trace["final_scoring"] = routing
@@ -584,6 +616,7 @@ class InterviewService:
                 per_question=per_answer,
             ),
             interview_id,
+            policy,
         )
         if routing:
             trace["tips"] = routing
@@ -599,6 +632,7 @@ class InterviewService:
                 aggregate=aggregate,
             ),
             interview_id,
+            policy,
         )
         if routing:
             trace["narrative"] = routing
@@ -652,14 +686,42 @@ class InterviewService:
         )
         return report
 
+    def _for_llm_resume(self, resume_text: str, candidate_name: str | None) -> str:
+        if not self.settings.redact_pii_for_llm:
+            return resume_text
+        return redact_resume(resume_text, names=[candidate_name] if candidate_name else [])
+
+    def _for_llm_text(self, text: str, candidate_name: str | None) -> str:
+        if not self.settings.redact_pii_for_llm:
+            return text
+        return redact_text(text, names=[candidate_name] if candidate_name else [])
+
+    def _policy_for(self, config: dict[str, Any]) -> "LLMPolicy":
+        """Which model profile and providers an interview's AI calls may use, from the plan it was booked on.
+
+        Read from plans.yaml at call time, so tightening a plan's provider list applies to interviews in progress.
+        A plan that no longer exists raises instead of falling back to a looser policy.
+        """
+        plan_name = config.get("plan")
+        if plan_name and self.settings.plans_enabled:
+            plan = get_plans().plan(plan_name)
+            allowed = tuple(plan.llm_allowed_providers) if plan.llm_allowed_providers else None
+            return LLMPolicy(plan.llm_profile, allowed)
+        stored = config.get("llm_profile")
+        return LLMPolicy(stored) if stored else NO_POLICY
+
     async def _try_llm_json(
         self,
         task: LLMTask,
         messages: list[LLMMessage],
         interview_id: str,
+        policy: "LLMPolicy" = None,
     ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        policy = policy or NO_POLICY
         try:
-            payload, result = await self.router.complete_json(task, messages)
+            payload, result = await self.router.complete_json(
+                task, messages, profile=policy.profile, authorized_providers=policy.allowed_providers
+            )
         except Exception as exc:  # noqa: BLE001
             safe_error = redact_secrets(str(exc)[:300])
             logger.warning("llm_task_degraded task=%s interview=%s error=%s", task, interview_id, safe_error)
@@ -677,6 +739,7 @@ class InterviewService:
             "fallbacks": max(0, len(result.attempts) - 1),
             "cost_usd": round(result.estimated_cost_usd, 6),
             "latency_ms": result.latency_ms,
+            "profile": getattr(result, "profile", None),
         }
         return payload, routing
 

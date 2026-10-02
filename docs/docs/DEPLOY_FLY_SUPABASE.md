@@ -62,9 +62,12 @@ fly secrets set \
   DEEPSEEK_API_KEY='...' OPENROUTER_API_KEY='...'
 ```
 
-To sell fixed interview packs, also set `PLANS_ENABLED=true` and edit `backend/plans.yaml` (allowed lengths, minutes
-per student, question counts). Student minutes live in the `quotas` table in the same Postgres schema, which the
-service creates on start. See section 4b of `INTEGRATION.md`.
+To sell interview packs, also set `PLANS_ENABLED=true` and edit `backend/plans.yaml` (pack size and days, lengths,
+refund rule) and `backend/models.yaml` (which AI providers serve each plan). Students' packs and payments live in the
+`packs` and `pack_payments` tables in the same Postgres schema, which the service creates on start. Add the keys for
+every provider your plans use (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`...), set `RETENTION_DAYS`,
+and run `python -m app.llm_smoke --profile premium` (and `economy`) once to check them. See section 4b of
+`INTEGRATION.md` and `DATA_HANDLING.md`.
 
 Settings to know about:
 

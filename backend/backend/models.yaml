@@ -1,17 +1,30 @@
 # Model routing configuration.
 #
-# Fallback order inside every tier is DeepSeek (direct), then OpenRouter, then OpenAI, then Anthropic.
-# Prices are USD per 1,000,000 tokens (DeepSeek peak-hour rates) and are used for cost estimates only.
-# Set `priority` on a candidate to override YAML order (lower is tried first).
+# Two PROFILES, one per plan family (plans.yaml picks a profile with `llm_profile`):
+#   economy  (the top-level `tiers` below, also the default): DeepSeek first, then OpenRouter, OpenAI, Anthropic.
+#   premium  (`profiles.premium` at the bottom): US providers only. Anthropic first, then OpenAI. Never DeepSeek.
+# Within every profile the fallback order is the YAML order, unless `priority` is set (lower is tried first).
+# Fallbacks never leave a profile, so a Premium interview cannot fall through to DeepSeek. plans.yaml also lists the
+# providers a plan may use (`llm_allowed_providers`) and the router enforces that list on every call, and the service
+# refuses to start if the two files disagree. If you change which companies see student data, update the privacy
+# policy and consent text in the main app too.
 #
-# A provider with no API key in .env is skipped automatically, so the OpenAI and Anthropic entries
-# cost nothing until you add keys.
+# Prices are USD per 1,000,000 tokens and are used for cost estimates only. Keep them current: they drive the
+# estimate in /api/v1/models. DeepSeek prices are peak-hour rates. Anthropic prices are first-party list prices
+# (checked 2026-09); check the OpenAI model names and prices against OpenAI's current list before relying on them.
+#
+# A provider with no API key in .env is skipped automatically, so unused providers cost nothing.
+#
+# `options` (optional, per model) tweak the request. For Anthropic's newer models:
+#   omit_temperature: they reject a non-default temperature.
+#   body.thinking {type: between_tools}: turns thinking off (it is on by default and its tokens are billed as output).
+#   body.output_config.effort: low | medium | high. Haiku 4.5 does not accept `effort`, so it has no options.
+# Run `python -m app.llm_smoke --profile premium` with real keys to check these against the live API.
 #
 # Jobs are matched to a tier by the `tasks` map at the bottom:
-#   cheap    -> short, high-volume work (DeepSeek V4.1 Flash)
-#   standard -> core structured generation and per-answer analysis (DeepSeek V4.1 Flash)
-#   premium  -> final scoring and the recruiter narrative (DeepSeek V4 Pro, the stronger model)
-# Keep prices current: they drive the cost estimate in /api/v1/models.
+#   cheap    -> short, high-volume work
+#   standard -> core structured generation and per-answer analysis
+#   premium  -> final scoring and the recruiter narrative (the stronger model)
 
 tiers:
   # High-volume, short-output work: tagging, follow-up questions, coaching hints.
@@ -32,9 +45,9 @@ tiers:
       output_price: 0.60
       priority: 2
     - provider: anthropic
-      model: claude-3-5-haiku-latest
-      input_price: 0.80
-      output_price: 4.00
+      model: claude-haiku-4-5
+      input_price: 1.00
+      output_price: 5.00
       priority: 3
 
   # Core structured generation: STAR question sets, per-answer analysis, tips.
@@ -55,10 +68,15 @@ tiers:
       output_price: 0.60
       priority: 2
     - provider: anthropic
-      model: claude-3-5-sonnet-latest
-      input_price: 3.00
-      output_price: 15.00
+      model: claude-sonnet-5-5
+      input_price: 2.00
+      output_price: 10.00
       priority: 3
+      options: &sonnet_low
+        omit_temperature: true
+        body:
+          thinking: {type: between_tools}
+          output_config: {effort: low}
 
   # High-stakes reasoning: final scoring and recruiter narrative.
   premium:
@@ -78,10 +96,56 @@ tiers:
       output_price: 10.00
       priority: 2
     - provider: anthropic
-      model: claude-3-7-sonnet-latest
-      input_price: 3.00
-      output_price: 15.00
+      model: claude-sonnet-5-5
+      input_price: 2.00
+      output_price: 10.00
       priority: 3
+      options: &sonnet_medium
+        omit_temperature: true
+        body:
+          thinking: {type: between_tools}
+          output_config: {effort: medium}
+
+# The default profile above is "economy". Other profiles each have their own tiers.
+default_profile: economy
+
+profiles:
+  premium:
+    cheap:
+      - provider: anthropic
+        model: claude-haiku-4-5
+        input_price: 1.00
+        output_price: 5.00
+        priority: 0
+      - provider: openai
+        model: gpt-4o-mini
+        input_price: 0.15
+        output_price: 0.60
+        priority: 1
+    standard:
+      - provider: anthropic
+        model: claude-sonnet-5-5
+        input_price: 2.00
+        output_price: 10.00
+        priority: 0
+        options: *sonnet_low
+      - provider: openai
+        model: gpt-4o
+        input_price: 2.50
+        output_price: 10.00
+        priority: 1
+    premium:
+      - provider: anthropic
+        model: claude-sonnet-5-5
+        input_price: 2.00
+        output_price: 10.00
+        priority: 0
+        options: *sonnet_medium
+      - provider: openai
+        model: gpt-4o
+        input_price: 2.50
+        output_price: 10.00
+        priority: 1
 
 tasks:
   resume_summary: cheap
