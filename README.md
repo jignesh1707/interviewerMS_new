@@ -23,8 +23,8 @@ webhook callbacks.
 
 ## Key design points
 
-- **Cost-aware model router.** Three platforms are tried in a fixed fallback order: OpenAI,
-  then DeepSeek, then Anthropic. Simple tasks stay on cheaper models inside that order; complex
+- **Cost-aware model router.** Platforms are tried in a fixed fallback order: DeepSeek
+  (V4.1 Flash), then OpenRouter, then OpenAI, then Anthropic. Simple tasks stay on cheaper models inside that order; complex
   tasks use stronger models. If the preferred provider is down or rate-limited, the router fails
   over to the next provider, with a circuit breaker so a broken provider is not hammered.
 - **Python-first.** Parsing, metrics, heuristic scoring, aggregation and fallbacks are implemented
@@ -87,11 +87,13 @@ docs/                           Integration and routing guides
 INSTALL_VOICE=1 ./scripts/setup_backend.sh
 ```
 
-Add at least one provider key to `backend/.env`. The router tries OpenAI first, then DeepSeek, then Anthropic:
+Add at least one provider key to `backend/.env`. The router tries DeepSeek first, then OpenRouter, then OpenAI, then Anthropic (providers without a key are skipped):
 
 ```bash
-OPENAI_API_KEY=...
 DEEPSEEK_API_KEY=...
+OPENROUTER_API_KEY=...
+# optional extras
+OPENAI_API_KEY=...
 ANTHROPIC_API_KEY=...
 ```
 
@@ -145,7 +147,7 @@ All settings are environment variables; see `backend/.env.example`.
 | `DATABASE_PATH` | SQLite database file | `backend/data/interviews.db` |
 | `STORAGE_DIR` | Root for audio and artifacts | `backend/data` |
 | `MODELS_CONFIG_PATH` | Router tier/task config | `backend/models.yaml` |
-| `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | Provider credentials | empty |
+| `DEEPSEEK_API_KEY` / `OPENROUTER_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | Provider credentials | empty |
 | `LLM_TIMEOUT_SECONDS` | Per-request timeout | `60` |
 | `PROVIDER_COOLDOWN_SECONDS` | Circuit-breaker cooldown after failures | `90` |
 | `WEBHOOK_URL` / `WEBHOOK_SECRET` | Default callback and HMAC secret | empty |
@@ -251,7 +253,7 @@ To keep running costs low:
 
 - Resume and JD parsing, metrics and heuristic scoring are pure Python.
 - Cheap-tier models handle short follow-ups, tagging and coaching hints.
-- Fallback order is OpenAI, then DeepSeek, then Anthropic, so a cheaper or stronger later candidate is not preferred over a configured OpenAI key.
+- Fallback order is DeepSeek, then OpenRouter, then OpenAI, then Anthropic, so a later candidate is only used when earlier ones fail or are unconfigured.
 - Premium models are used only for final scoring and the recruiter narrative.
 - Per-answer LLM analysis can be disabled with `config.analyze_per_answer = false`, which leaves
   Python heuristics in place.

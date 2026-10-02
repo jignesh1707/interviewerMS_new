@@ -1,66 +1,83 @@
 # Model routing configuration.
 #
-# Fallback order inside every tier is OpenAI, then DeepSeek, then Anthropic.
-# Prices are USD per 1,000,000 tokens and are used for cost estimates only.
+# Fallback order inside every tier is DeepSeek (direct), then OpenRouter, then OpenAI, then Anthropic.
+# Prices are USD per 1,000,000 tokens (DeepSeek peak-hour rates) and are used for cost estimates only.
 # Set `priority` on a candidate to override YAML order (lower is tried first).
 #
-# A provider with no API key in .env is skipped automatically.
+# A provider with no API key in .env is skipped automatically, so the OpenAI and Anthropic entries
+# cost nothing until you add keys. To use the stronger DeepSeek V4 Pro for the premium tier, change the
+# deepseek model to `deepseek-v4-pro` and the openrouter model to `deepseek/deepseek-v4-pro-0813`.
 # Keep prices current: they drive the cost estimate in /api/v1/models.
 
 tiers:
   # High-volume, short-output work: tagging, follow-up questions, coaching hints.
   cheap:
+    - provider: deepseek
+      model: deepseek-flash
+      input_price: 0.30
+      output_price: 1.20
+      priority: 0
+    - provider: openrouter
+      model: deepseek/deepseek-v4.1-flash
+      input_price: 0.30
+      output_price: 1.20
+      priority: 1
     - provider: openai
       model: gpt-4o-mini
       input_price: 0.15
       output_price: 0.60
-      priority: 0
-    - provider: deepseek
-      model: deepseek-chat
-      input_price: 0.27
-      output_price: 1.10
-      priority: 1
+      priority: 2
     - provider: anthropic
       model: claude-3-5-haiku-latest
       input_price: 0.80
       output_price: 4.00
-      priority: 2
+      priority: 3
 
   # Core structured generation: STAR question sets, per-answer analysis, tips.
   standard:
+    - provider: deepseek
+      model: deepseek-flash
+      input_price: 0.30
+      output_price: 1.20
+      priority: 0
+    - provider: openrouter
+      model: deepseek/deepseek-v4.1-flash
+      input_price: 0.30
+      output_price: 1.20
+      priority: 1
     - provider: openai
       model: gpt-4o-mini
       input_price: 0.15
       output_price: 0.60
-      priority: 0
-    - provider: deepseek
-      model: deepseek-chat
-      input_price: 0.27
-      output_price: 1.10
-      priority: 1
+      priority: 2
     - provider: anthropic
       model: claude-3-5-sonnet-latest
       input_price: 3.00
       output_price: 15.00
-      priority: 2
+      priority: 3
 
   # High-stakes reasoning: final scoring and recruiter narrative.
   premium:
+    - provider: deepseek
+      model: deepseek-flash
+      input_price: 0.30
+      output_price: 1.20
+      priority: 0
+    - provider: openrouter
+      model: deepseek/deepseek-v4.1-flash
+      input_price: 0.30
+      output_price: 1.20
+      priority: 1
     - provider: openai
       model: gpt-4o
       input_price: 2.50
       output_price: 10.00
-      priority: 0
-    - provider: deepseek
-      model: deepseek-reasoner
-      input_price: 0.55
-      output_price: 2.19
-      priority: 1
+      priority: 2
     - provider: anthropic
       model: claude-3-7-sonnet-latest
       input_price: 3.00
       output_price: 15.00
-      priority: 2
+      priority: 3
 
 tasks:
   resume_summary: cheap

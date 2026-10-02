@@ -36,7 +36,7 @@ async def ready_details() -> dict:
         "status": "ok",
         "llm_providers": {
             name: model_router.provider_configured(name)
-            for name in ("openai", "deepseek", "anthropic")
+            for name in ("deepseek", "openrouter", "openai", "anthropic")
         },
         "voice": {
             "stt_model_loaded": stt.model_ready(),

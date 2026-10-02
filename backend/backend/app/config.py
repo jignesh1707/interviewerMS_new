@@ -66,6 +66,12 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
 
+    openrouter_api_key: str = ""
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    # OpenRouter may route to several upstream hosts. "deny" asks it to use only endpoints that do
+    # not retain or train on prompts; "allow" removes the restriction. Empty sends no preference.
+    openrouter_data_collection: str = "deny"
+
     anthropic_api_key: str = ""
     anthropic_base_url: str = "https://api.anthropic.com"
 

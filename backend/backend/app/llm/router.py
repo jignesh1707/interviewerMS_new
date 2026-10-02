@@ -151,6 +151,7 @@ class ModelRouter:
             s.openai_api_key,
             s.deepseek_api_key,
             s.anthropic_api_key,
+            s.openrouter_api_key,
             s.webhook_secret,
             *s.api_key_set,
         ]
@@ -161,8 +162,21 @@ class ModelRouter:
         self._providers = {
             "openai": OpenAICompatibleClient("openai", s.openai_base_url, s.openai_api_key, s.llm_timeout_seconds),
             "deepseek": OpenAICompatibleClient("deepseek", s.deepseek_base_url, s.deepseek_api_key, s.llm_timeout_seconds),
+            "openrouter": OpenAICompatibleClient(
+                "openrouter",
+                s.openrouter_base_url,
+                s.openrouter_api_key,
+                s.llm_timeout_seconds,
+                extra_body=self._openrouter_extra_body(),
+            ),
             "anthropic": AnthropicClient("anthropic", s.anthropic_base_url, s.anthropic_api_key, s.llm_timeout_seconds),
         }
+
+    def _openrouter_extra_body(self) -> dict[str, Any]:
+        preference = self.settings.openrouter_data_collection.strip().lower()
+        if preference in {"allow", "deny"}:
+            return {"provider": {"data_collection": preference}}
+        return {}
 
     def provider_configured(self, name: str) -> bool:
         if name in self.settings.disabled_provider_set:

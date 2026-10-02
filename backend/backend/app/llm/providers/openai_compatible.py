@@ -20,8 +20,16 @@ def _classify(status_code: int, body: str) -> ProviderCallError:
 
 
 class OpenAICompatibleClient:
-    def __init__(self, name: str, base_url: str, api_key: str, timeout: float) -> None:
+    def __init__(
+        self,
+        name: str,
+        base_url: str,
+        api_key: str,
+        timeout: float,
+        extra_body: dict[str, Any] | None = None,
+    ) -> None:
         self.name = name
+        self.extra_body = extra_body or {}
         self.base_url = base_url.rstrip("/")
         self._api_key = api_key
         self.timeout = timeout
@@ -52,6 +60,7 @@ class OpenAICompatibleClient:
             "temperature": temperature,
             "max_tokens": max_tokens,
             "stream": False,
+            **self.extra_body,
         }
         headers = {
             "Authorization": f"Bearer {self._api_key}",

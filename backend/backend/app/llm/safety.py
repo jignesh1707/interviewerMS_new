@@ -32,6 +32,7 @@ APPROVED_MODEL_HOSTS = frozenset(
         "api.openai.com",
         "api.deepseek.com",
         "api.anthropic.com",
+        "openrouter.ai",
     }
 )
 
@@ -39,6 +40,7 @@ PROVIDER_APPROVED_HOSTS: dict[str, frozenset[str]] = {
     "openai": frozenset({"api.openai.com"}),
     "deepseek": frozenset({"api.deepseek.com"}),
     "anthropic": frozenset({"api.anthropic.com"}),
+    "openrouter": frozenset({"openrouter.ai"}),
 }
 
 MAX_RESPONSE_CHARS = 32768

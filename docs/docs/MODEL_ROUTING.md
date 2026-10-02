@@ -4,7 +4,7 @@ The router lives in `backend/app/llm/router.py` and is configured by `backend/mo
 
 ## Concepts
 
-- **Tier**: an ordered list of `{provider, model}` candidates. Fallback order is OpenAI, then DeepSeek, then Anthropic.
+- **Tier**: an ordered list of `{provider, model}` candidates. Fallback order is DeepSeek, then OpenRouter, then OpenAI, then Anthropic.
 - **Task**: a named unit of work (`question_generation`, `final_scoring`, ...).
 - **Task map**: assigns each task to a tier, so simple work never reaches an expensive model.
 - **Circuit breaker**: a provider that keeps failing is temporarily removed from the candidate list.
@@ -47,7 +47,8 @@ default_tier: standard
 
 Rules:
 
-- Candidate order inside a tier is the fallback order. Put OpenAI first, then DeepSeek, then Anthropic.
+- Candidate order inside a tier is the fallback order. Put DeepSeek first, then OpenRouter, then OpenAI, then Anthropic.
+- OpenRouter is called at `https://openrouter.ai/api/v1` with the model id `deepseek/deepseek-v4.1-flash`. By default requests carry `provider.data_collection = deny` (`OPENROUTER_DATA_COLLECTION`), so OpenRouter only routes to upstream hosts that do not retain or train on prompts. If no such host is available the call fails and routing moves on.
 - Prices are only used for the cost estimate reported in `/api/v1/models` and `routing_trace`; they
   are not used for routing decisions. Update them to match current provider pricing.
 - Set `priority` on a candidate to override YAML order (lower is tried first).
