@@ -20,6 +20,11 @@ export type InterviewStatus = {
   updated_at: string
   finished_at: string | null
   error: string | null
+  // Set when the service runs with plans enabled; null/absent otherwise.
+  duration_minutes?: number | null
+  deadline_at?: string | null
+  grace_seconds?: number | null
+  seconds_remaining?: number | null
 }
 
 export type AnswerResult = {
@@ -58,6 +63,7 @@ export function createInterview(
     resume_text?: string
     jd_text?: string
     callback_url?: string
+    external_ref?: string
     config?: Record<string, unknown>
   },
 ) {

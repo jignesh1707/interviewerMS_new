@@ -166,6 +166,7 @@ class InterviewService:
             config.update(
                 plan=reservation.plan,
                 charged_minutes=reservation.minutes,
+                grace_seconds=reservation.grace_seconds,
                 deadline_at=deadline.isoformat(),
             )
         interview = await self.store.update_interview(
@@ -763,6 +764,13 @@ class InterviewService:
             "error": interview.get("error"),
             "duration_minutes": config.get("duration_minutes") if deadline_at else None,
             "deadline_at": deadline_at,
+            "grace_seconds": config.get("grace_seconds") if deadline_at else None,
+            # Computed here so a client's countdown does not depend on its own clock being right.
+            "seconds_remaining": (
+                max(0, int((datetime.fromisoformat(deadline_at) - datetime.now(timezone.utc)).total_seconds()))
+                if deadline_at
+                else None
+            ),
         }
 
 

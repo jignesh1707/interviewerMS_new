@@ -104,6 +104,23 @@ def test_default_length_comes_from_the_plan_and_sets_a_deadline(client):
     assert before + timedelta(minutes=15, seconds=55) < deadline < before + timedelta(minutes=16, seconds=30)
 
 
+def test_status_reports_time_remaining_so_a_client_can_run_a_countdown(client):
+    """seconds_remaining is computed by the server, so a browser with a wrong clock still counts down correctly."""
+    body = create(client)
+    status = body["interview"]
+    assert status["grace_seconds"] == 60
+    assert 15 * 60 + 60 - 5 <= status["seconds_remaining"] <= 15 * 60 + 60
+
+    interview_id = status["id"]
+    polled = client.get(f"/api/v1/interviews/{interview_id}/status", headers=HEADERS).json()
+    assert polled["seconds_remaining"] <= status["seconds_remaining"]
+    assert polled["grace_seconds"] == 60
+
+    _expire(interview_id)
+    expired = client.get(f"/api/v1/interviews/{interview_id}/status", headers=HEADERS).json()
+    assert expired["seconds_remaining"] == 0  # never negative
+
+
 def test_chosen_length_must_be_allowed_and_costs_nothing_when_refused(client):
     create(client, config={"duration_minutes": 25}, expect=422)
     quota = client.get("/api/v1/quotas/stu-1", headers=HEADERS).json()
@@ -326,4 +343,6 @@ def test_everything_above_is_inert_when_plans_are_off(client, monkeypatch):
     status = body.json()["interview"]
     assert status["duration_minutes"] is None
     assert status["deadline_at"] is None
+    assert status["seconds_remaining"] is None
+    assert status["grace_seconds"] is None
     assert client.get("/api/v1/quotas/stu-1", headers=HEADERS).status_code == 404

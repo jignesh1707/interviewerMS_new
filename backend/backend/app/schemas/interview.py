@@ -94,6 +94,8 @@ class InterviewStatus(BaseModel):
     error: str | None = None
     duration_minutes: int | None = None  # set when plans are enabled
     deadline_at: str | None = None  # answers are refused after this moment (UTC, ISO 8601)
+    grace_seconds: int | None = None  # the last part of the time before deadline_at; the nominal end is deadline_at minus this
+    seconds_remaining: int | None = None  # until deadline_at, measured by the server when it answered; 0 once passed
 
 
 class CreateInterviewResponse(BaseModel):
