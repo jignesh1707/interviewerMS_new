@@ -144,6 +144,8 @@ curl -s  http://localhost:8080/api/v1/quotas/STUDENT_ID -H "X-API-Key: $KEY"
 curl -sX POST http://localhost:8080/api/v1/quotas/STUDENT_ID/grant -H "X-API-Key: $KEY"   -H "Content-Type: application/json" -d '{"minutes": 30}'     # add minutes for the current period
 ```
 
+**Per-student rate limits** (independent of `PLANS_ENABLED`): once an interview has an `external_ref`, its LLM and speech-backed calls (create, answer, audio answer, finish) also count against that student: `STUDENT_RATE_LIMIT_PER_MINUTE` (30) and `STUDENT_DAILY_BUDGET` (200 per UTC day), `0` to turn either off. They are kept per tenant and student, shared across machines through Redis, and return 429 like the tenant limits. One student cannot use up the tenant's shared limits on their own, but the tenant limits still apply on top. The standalone `/speech/transcribe` and `/speech/synthesize` calls carry no student id, so only the tenant limits cover them.
+
 Billing stays in your main app: take the payment there, then call `grant` for any top-up. Quota rows are keyed by `external_ref` and are not removed by the erase-by-user endpoint, so erasing a student does not reset their balance.
 
 ## 5. Webhooks

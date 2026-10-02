@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     rate_limit_expensive_per_minute: int = 20
     daily_expensive_budget: int = 2000  # LLM/STT/TTS-backed calls per tenant per UTC day; 0 = unlimited
     auth_fail_limit_per_minute: int = 10  # failed key attempts per client address
+    # Per student (tenant + the interview's external_ref), for the same LLM/STT-backed calls. 0 = unlimited.
+    # Calls without an external_ref are only covered by the tenant limits above.
+    student_rate_limit_per_minute: int = 30
+    student_daily_budget: int = 200
 
     # Untrusted document parsing.
     max_pdf_pages: int = 30

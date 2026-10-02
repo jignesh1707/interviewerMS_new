@@ -66,7 +66,7 @@ class DailyBudget:
         self._counts: dict[tuple[str, str], int] = {}
         self._lock = threading.Lock()
 
-    def consume(self, tenant: str, budget: int) -> None:
+    def consume(self, tenant: str, budget: int, scope: str = "API key") -> None:
         if budget <= 0:
             return
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -75,7 +75,7 @@ class DailyBudget:
             used = self._counts.get((tenant, today), 0)
             if used >= budget:
                 raise RateLimitError(
-                    "daily usage budget exhausted for this API key",
+                    f"daily usage budget exhausted for this {scope}",
                     details={"budget": budget},
                     headers={"Retry-After": "3600"},
                 )
@@ -208,7 +208,7 @@ class SharedBudget:
     def __init__(self) -> None:
         self.memory = DailyBudget()
 
-    async def consume(self, tenant: str, budget: int) -> None:
+    async def consume(self, tenant: str, budget: int, scope: str = "API key") -> None:
         if budget <= 0:
             return
         pair = _redis()
@@ -218,7 +218,7 @@ class SharedBudget:
                 count, _ = await pair[1](keys=[_key("budget", tenant, today)], args=[172_800])
                 if int(count) > budget:
                     raise RateLimitError(
-                        "daily usage budget exhausted for this API key",
+                        f"daily usage budget exhausted for this {scope}",
                         details={"budget": budget},
                         headers={"Retry-After": "3600"},
                     )
@@ -227,7 +227,7 @@ class SharedBudget:
                 raise
             except Exception as exc:  # noqa: BLE001
                 _warn_once("redis budget unavailable", exc)
-        self.memory.consume(tenant, budget)
+        self.memory.consume(tenant, budget, scope)
 
     def reset(self) -> None:
         self.memory.reset()
