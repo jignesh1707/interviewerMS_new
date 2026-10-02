@@ -71,8 +71,17 @@ For each question:
 
 Typed answers use `POST /api/v1/interviews/{id}/answers` with `question_index` and `transcript`.
 
-When done, call `POST /api/v1/interviews/{id}/finish` to receive the report, or rely on the
-`interview.completed` webhook.
+When done, call `POST /api/v1/interviews/{id}/finish`. What comes back depends on `FINISH_ASYNC`:
+
+- **`FINISH_ASYNC=true` (use this in production).** The call answers **202** straight away with
+  `{"status": "processing", "report": null}` and the report is built in the background (10 to 30 s). Wait for the
+  `interview.completed` webhook, or poll `GET /api/v1/interviews/{id}/report` every 2 to 3 seconds until `status` is
+  `completed` (then `report` is filled in) or `failed` (then `error` says why). Calling `finish` again while it is
+  processing is safe: it returns 202 again and does **not** start a second build. Calling it after a failure retries.
+  Calling it after completion returns **200** with the saved report.
+- **`FINISH_ASYNC=false` (default, for local use).** The call waits and answers **200** with the report.
+
+Write your client to accept both: if the response has a `report`, use it, otherwise wait as above.
 
 ## 4. Report shape
 
@@ -220,6 +229,8 @@ Headers:
 - `X-Interview-Signature` — legacy HMAC-SHA256 of the raw body only (no replay protection)
 
 Outside `ENVIRONMENT=development` the service will not send unsigned webhooks: set `WEBHOOK_SECRET`.
+
+**Delivery is durable and at least once.** Each webhook is written to a database table (`webhook_outbox`) before anything is sent, and a background loop delivers it. If your receiver is down, returns 5xx or 429, or the service restarts or deploys, delivery is retried with backoff after 30 s, 2 min, 10 min, 1 h, 6 h and 12 h, then given up (`WEBHOOK_OUTBOX_MAX_ATTEMPTS`, default 8 attempts). Other 4xx answers (your receiver rejected it) are not retried. Every retry carries a fresh timestamp and signature but the same `X-Interview-Delivery`, so **deduplicate on that header**: a webhook can arrive twice. Delivered and abandoned rows are deleted after `WEBHOOK_OUTBOX_KEEP_DAYS` (7) and when the interview is erased. Because a receiver can be down for longer than that, also reconcile by polling (section 6) for interviews you are still waiting on.
 
 Python verification:
 

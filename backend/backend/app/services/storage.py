@@ -136,6 +136,91 @@ class Store:
         self._execute(f"UPDATE interviews SET {', '.join(assignments)} WHERE id = ?", tuple(values))
         return self.get_interview(interview_id)
 
+    # ------------------------------------------------------------------ report generation ownership
+    # Several machines may receive a finish call or run the sweeper at once; exactly one UPDATE can win each claim.
+
+    def claim_finish(self, interview_id: str) -> bool:
+        """Move an interview to 'processing' unless it is already processing or completed."""
+        now = utc_now()
+        return self.db.execute_count(
+            "UPDATE interviews SET status = 'processing', error = NULL, updated_at = ? "
+            "WHERE id = ? AND status NOT IN ('processing', 'completed')",
+            (now, interview_id),
+        ) == 1
+
+    def list_stale_processing_ids(self, cutoff_iso: str, limit: int = 20) -> list[str]:
+        rows = self._query_all(
+            "SELECT id FROM interviews WHERE status = 'processing' AND updated_at < ? ORDER BY updated_at LIMIT ?",
+            (cutoff_iso, limit),
+        )
+        return [row["id"] for row in rows]
+
+    def claim_stale_finish(self, interview_id: str, cutoff_iso: str) -> bool:
+        """Take over a report build whose machine disappeared (restart, deploy, crash)."""
+        return self.db.execute_count(
+            "UPDATE interviews SET updated_at = ? WHERE id = ? AND status = 'processing' AND updated_at < ?",
+            (utc_now(), interview_id, cutoff_iso),
+        ) == 1
+
+    # ------------------------------------------------------------------ webhook outbox
+    # Webhooks are written here first and sent by a background loop, so a restart or a dead receiver loses nothing.
+
+    def outbox_add(self, interview_id: str | None, url: str, event: str, payload: dict[str, Any]) -> None:
+        now = utc_now()
+        self._execute(
+            "INSERT INTO webhook_outbox (interview_id, url, event, payload, status, attempts, next_attempt_at, created_at) "
+            "VALUES (?, ?, ?, ?, 'pending', 0, ?, ?)",
+            (interview_id, url, event, json.dumps(payload), now, now),
+        )
+
+    def outbox_due(self, now_iso: str, limit: int = 20) -> list[dict[str, Any]]:
+        rows = self._query_all(
+            "SELECT * FROM webhook_outbox WHERE status = 'pending' AND next_attempt_at <= ? "
+            "AND (locked_until IS NULL OR locked_until < ?) ORDER BY id LIMIT ?",
+            (now_iso, now_iso, limit),
+        )
+        for row in rows:
+            try:
+                row["payload"] = json.loads(row["payload"])
+            except (TypeError, json.JSONDecodeError):
+                row["payload"] = {}
+        return rows
+
+    def outbox_claim(self, outbox_id: int, now_iso: str, lock_until_iso: str) -> bool:
+        return self.db.execute_count(
+            "UPDATE webhook_outbox SET locked_until = ? WHERE id = ? AND status = 'pending' "
+            "AND next_attempt_at <= ? AND (locked_until IS NULL OR locked_until < ?)",
+            (lock_until_iso, outbox_id, now_iso, now_iso),
+        ) == 1
+
+    def outbox_mark_delivered(self, outbox_id: int, attempts: int) -> None:
+        self._execute(
+            "UPDATE webhook_outbox SET status = 'delivered', attempts = ?, delivered_at = ?, locked_until = NULL, "
+            "last_error = NULL WHERE id = ?",
+            (attempts, utc_now(), outbox_id),
+        )
+
+    def outbox_mark_retry(self, outbox_id: int, attempts: int, next_attempt_iso: str, error: str) -> None:
+        self._execute(
+            "UPDATE webhook_outbox SET attempts = ?, next_attempt_at = ?, locked_until = NULL, last_error = ? WHERE id = ?",
+            (attempts, next_attempt_iso, error[:500], outbox_id),
+        )
+
+    def outbox_mark_dead(self, outbox_id: int, attempts: int, error: str) -> None:
+        self._execute(
+            "UPDATE webhook_outbox SET status = 'dead', attempts = ?, locked_until = NULL, last_error = ? WHERE id = ?",
+            (attempts, error[:500], outbox_id),
+        )
+
+    def outbox_prune(self, cutoff_iso: str) -> int:
+        return self.db.execute_count(
+            "DELETE FROM webhook_outbox WHERE status IN ('delivered', 'dead') AND created_at < ?", (cutoff_iso,)
+        )
+
+    def outbox_counts(self) -> dict[str, int]:
+        rows = self._query_all("SELECT status, COUNT(*) AS n FROM webhook_outbox GROUP BY status")
+        return {row["status"]: int(row["n"]) for row in rows}
+
     def delete_interview(self, interview_id: str) -> list[str]:
         """Delete an interview and everything attached to it. Returns stored audio paths."""
         with self.db.transaction() as tx:
@@ -146,7 +231,7 @@ class Store:
                     (interview_id,),
                 )
             ]
-            for table in ("answers", "reports", "events"):
+            for table in ("answers", "reports", "events", "webhook_outbox"):
                 tx.execute(f"DELETE FROM {table} WHERE interview_id = ?", (interview_id,))
             tx.execute("DELETE FROM interviews WHERE id = ?", (interview_id,))
         return paths

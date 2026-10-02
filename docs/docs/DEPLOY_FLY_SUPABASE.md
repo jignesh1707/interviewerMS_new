@@ -91,10 +91,23 @@ DELETE /api/v1/interviews/by-ref/<user id>              erase all of them: answe
 Supabase keeps daily backups, so erased rows can remain in backups until they expire. Mention that in your privacy
 policy.
 
-## 5. Not covered here yet
+## 5. Asynchronous reports and the webhook outbox
+
+Set `FINISH_ASYNC=true` in production. `POST .../finish` then answers 202 immediately and the report is built in the
+background, so no proxy timeout can cut off a student's request. Any machine can build it; the status change to
+`processing` is a single conditional UPDATE, so two finish calls (or two machines) never build it twice. A sweeper on
+every machine takes over builds that have shown no progress for `FINISH_STALE_SECONDS` (300), which covers deploys and
+crashes. The main app polls `GET .../report` and/or waits for the `interview.completed` webhook (INTEGRATION.md).
+
+Webhooks go through the `webhook_outbox` table and are retried with backoff until delivered (INTEGRATION.md,
+section 5). Two things to watch: rows with `status = 'dead'` are webhooks that were given up on, and `pending` rows
+that keep growing mean the receiver is down. Both are plain SQL (`SELECT status, count(*) FROM interviewer.webhook_outbox
+GROUP BY 1`).
+
+A build cut off by a deploy or crash is repeated from the start, so its AI calls are paid for again each time its
+machine is interrupted. That should be rare; if machines keep dying mid-build (for example out of memory), fix that first.
+
+## 6. Not covered here yet
 
 - Speech to text still runs inside the API process. At higher load, move it to its own Fly app with larger CPU
   machines.
-- Webhooks are still sent from inside the request process and retried a few times. A database-backed outbox would
-  make delivery durable across restarts.
-- The final report is still generated inside the `finish` request (10 to 30 seconds).

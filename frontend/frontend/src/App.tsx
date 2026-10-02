@@ -6,6 +6,8 @@ import {
   createInterview,
   createInterviewWithFiles,
   finishInterview,
+  getReport,
+  waitForReport,
   getModels,
   speak,
   submitAudioAnswer,
@@ -264,7 +266,8 @@ export default function App() {
     setBusy(true)
     setError('')
     try {
-      const data = await finishInterview(apiKey, interview.id)
+      const first = await finishInterview(apiKey, interview.id)
+      const data = await waitForReport(first, () => getReport(apiKey, interview.id))
       setReport(data.report)
       setStage('report')
     } catch (err) {

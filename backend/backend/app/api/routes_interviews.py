@@ -200,13 +200,21 @@ async def get_transcript(interview_id: str, tenant: Tenant) -> dict:
     }
 
 
-@router.post("/{interview_id}/finish", response_model=ReportResponse, dependencies=[Depends(expensive_call)])
-async def finish_interview(interview_id: str, tenant: Tenant) -> ReportResponse:
+@router.post(
+    "/{interview_id}/finish",
+    response_model=ReportResponse,
+    dependencies=[Depends(expensive_call)],
+    responses={202: {"description": "Report is being generated; poll GET .../report or wait for the webhook."}},
+)
+async def finish_interview(interview_id: str, tenant: Tenant, response: Response) -> ReportResponse:
     service = get_interview_service()
     store = get_async_store()
     interview = await store.get_interview_for_tenant(interview_id, tenant)
     await enforce_student_limits(tenant, interview.get("external_ref"))
-    report = await service.finish_interview(interview_id)
+    status, report = await service.request_finish(interview_id)
+    if report is None:
+        response.status_code = 202
+        return ReportResponse(interview_id=interview_id, status="processing")
     saved = await store.get_report(interview_id)
     return ReportResponse(
         interview_id=interview_id,
@@ -226,6 +234,7 @@ async def get_report(interview_id: str, tenant: Tenant) -> ReportResponse:
         status=interview["status"],
         report=saved["payload"] if saved else None,
         created_at=saved["created_at"] if saved else None,
+        error=interview.get("error") if interview["status"] == "failed" else None,
     )
 
 

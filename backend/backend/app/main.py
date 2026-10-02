@@ -28,11 +28,17 @@ async def lifespan(_: FastAPI):
         from app.voice import stt
 
         await stt.preload()
-    task = asyncio.create_task(_retention_loop()) if settings.retention_days > 0 else None
+    tasks = [asyncio.create_task(_build_sweep_loop())]
+    if settings.retention_days > 0:
+        tasks.append(asyncio.create_task(_retention_loop()))
+    if settings.webhook_outbox_worker:
+        from app.services import webhook
+
+        tasks.append(asyncio.create_task(webhook.outbox_loop()))
     try:
         yield
     finally:
-        if task:
+        for task in tasks:
             task.cancel()
 
 
@@ -45,6 +51,17 @@ async def _retention_loop() -> None:
         except Exception:  # noqa: BLE001
             logger.exception("retention_purge_failed")
         await asyncio.sleep(max(1, settings.retention_sweep_minutes) * 60)
+
+
+async def _build_sweep_loop() -> None:
+    from app.services.interview_service import get_interview_service
+
+    while True:
+        await asyncio.sleep(max(5, settings.finish_sweep_seconds))
+        try:
+            await get_interview_service().sweep_stalled_builds()
+        except Exception:  # noqa: BLE001
+            logger.exception("report_build_sweep_failed")
 
 
 app = FastAPI(

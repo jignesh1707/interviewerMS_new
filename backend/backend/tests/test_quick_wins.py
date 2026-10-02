@@ -7,6 +7,7 @@ import pytest
 from app.config import get_settings
 from app.core.errors import ServiceUnavailableError
 from app.services import webhook
+from app.services.storage import get_store
 from app.voice import stt
 from tests.fakes import FakeRouter
 from tests.test_api import HEADERS, client, create_interview  # noqa: F401  (client is a fixture)
@@ -26,13 +27,15 @@ def _answer_one(client):
 
 
 def test_finish_does_not_wait_for_the_webhook(client, monkeypatch):
-    calls = []
+    sent = []
 
-    async def slow_deliver(url, event, data):
-        calls.append(event)
+    async def never_called(*args, **kwargs):
+        sent.append(args)
         await asyncio.sleep(30)  # a dead receiver
 
-    monkeypatch.setattr(webhook, "deliver", slow_deliver)
+    monkeypatch.setattr(webhook, "send_once", never_called)
+    monkeypatch.setattr(webhook, "deliver", never_called)
+    monkeypatch.setattr(get_settings(), "webhook_url", "https://hooks.example.com/interviews")
     interview_id = _answer_one(client)
 
     started = time.monotonic()
@@ -42,10 +45,11 @@ def test_finish_does_not_wait_for_the_webhook(client, monkeypatch):
     assert response.status_code == 200, response.text
     assert response.json()["report"]["overall_score"] == 76
     assert elapsed < 5
-    deadline = time.monotonic() + 2
-    while "interview.completed" not in calls and time.monotonic() < deadline:
-        time.sleep(0.05)
-    assert "interview.completed" in calls
+    assert sent == []  # nothing was sent inside the request; the outbox loop sends it later
+    queued = get_store().db.query_all(
+        "SELECT event FROM webhook_outbox WHERE interview_id = ? ORDER BY id", (interview_id,)
+    )
+    assert [row["event"] for row in queued] == ["interview.created", "interview.completed"]
 
 
 def test_tips_and_narrative_run_in_parallel(client):

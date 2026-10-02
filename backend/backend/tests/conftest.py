@@ -12,6 +12,7 @@ os.environ["OPENAI_API_KEY"] = ""
 os.environ["ANTHROPIC_API_KEY"] = ""
 os.environ["WEBHOOK_URL"] = ""
 os.environ["STT_PRELOAD"] = "false"
+os.environ["WEBHOOK_OUTBOX_WORKER"] = "false"  # tests drain the outbox themselves
 # Run the whole suite against Postgres by setting TEST_DATABASE_URL (CI does this in a second job).
 if os.environ.get("TEST_DATABASE_URL"):
     os.environ["DATABASE_URL"] = os.environ["TEST_DATABASE_URL"]
