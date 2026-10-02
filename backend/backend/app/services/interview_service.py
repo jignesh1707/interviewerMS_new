@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import get_settings
-from app.core.errors import AllProvidersFailedError, ConflictError, ValidationAppError
+from app.core.errors import AllProvidersFailedError, ConflictError, TimeLimitError, ValidationAppError
 from app.core.logging import get_logger
 from app.core.url_safety import validate_callback_url
 from app.llm.providers.base import LLMMessage
@@ -25,6 +25,7 @@ from app.prompts.report import (
 )
 from app.schemas.interview import CreateInterviewRequest
 from app.services import document_parser as parser
+from app.services.quota import QuotaService, Reservation
 from app.services.storage import AsyncStore, Store, get_async_store
 from app.services.text_analysis import aggregate_heuristic_scores, analyze_transcript, heuristic_score
 
@@ -45,6 +46,7 @@ class InterviewService:
         self.store = store or get_async_store()
         self.router = router or get_router()
         self.settings = get_settings()
+        self.quota = QuotaService(self.store)
 
     async def create_interview(
         self,
@@ -55,6 +57,37 @@ class InterviewService:
         resume_summary_text: str | None = None,
         jd_summary_text: str | None = None,
         tenant_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Create an interview. With plans enabled, book the student's minutes first and give them back on failure."""
+        reservation: Reservation | None = None
+        if self.settings.plans_enabled:
+            reservation = await self.quota.reserve(
+                tenant_id or "default", payload.external_ref, payload.plan, payload.config.duration_minutes
+            )
+            payload = payload.model_copy(
+                update={"config": payload.config.model_copy(update=reservation.config_overrides())}
+            )
+        try:
+            return await self._create_interview(
+                payload,
+                resume_bytes=resume_bytes,
+                jd_bytes=jd_bytes,
+                tenant_id=tenant_id,
+                reservation=reservation,
+            )
+        except BaseException:
+            if reservation is not None:
+                await asyncio.shield(self.quota.refund(reservation))
+            raise
+
+    async def _create_interview(
+        self,
+        payload: CreateInterviewRequest,
+        *,
+        resume_bytes: tuple[str, bytes] | None,
+        jd_bytes: tuple[str, bytes] | None,
+        tenant_id: str | None,
+        reservation: Reservation | None,
     ) -> dict[str, Any]:
         consent = getattr(payload, "consent_to_ai_processing", None)
         if self.settings.require_consent and consent is not True:
@@ -125,6 +158,16 @@ class InterviewService:
             await self.store.add_event(interview_id, "interview.failed", {"stage": "question_generation"})
             raise
 
+        if reservation is not None:
+            # The clock starts once the questions are ready, so slow generation never eats the student's time.
+            deadline = datetime.now(timezone.utc) + timedelta(
+                minutes=reservation.minutes, seconds=reservation.grace_seconds
+            )
+            config.update(
+                plan=reservation.plan,
+                charged_minutes=reservation.minutes,
+                deadline_at=deadline.isoformat(),
+            )
         interview = await self.store.update_interview(
             interview_id,
             status="questions_ready",
@@ -132,6 +175,7 @@ class InterviewService:
             jd_summary=jd_summary,
             match_analysis=match,
             questions=questions,
+            config=config,
         )
         await self.store.add_event(
             interview_id,
@@ -230,6 +274,8 @@ class InterviewService:
             raise ValidationAppError("transcript is empty; no speech detected")
         if interview.get("status") == "completed":
             raise ConflictError("interview is already completed; no more answers can be submitted")
+        self.ensure_time_remaining(interview)
+        self.enforce_answer_caps(transcript=transcript, duration_seconds=duration_seconds)
 
         resolved_index, target = self._resolve_question(questions, question_id, question_index)
         if any(item.get("question_id") == target["id"] for item in await self.store.list_answers(interview_id)):
@@ -346,6 +392,32 @@ class InterviewService:
             "all_answered": next_question is None,
             "router": router_trace or None,
         }
+
+    @staticmethod
+    def ensure_time_remaining(interview: dict[str, Any]) -> None:
+        """Refuse new answers once the interview's server-side deadline has passed (finish is still allowed)."""
+        raw = (interview.get("config") or {}).get("deadline_at")
+        if not raw:
+            return
+        if datetime.now(timezone.utc) > datetime.fromisoformat(raw):
+            raise TimeLimitError(
+                "the time limit for this interview has been reached; call finish to get the report",
+                details={"deadline_at": raw},
+            )
+
+    def enforce_answer_caps(self, *, transcript: str, duration_seconds: float | None) -> None:
+        """Bound what one answer can cost: speech length (STT) and text length (LLM tokens)."""
+        max_seconds = self.settings.max_answer_seconds
+        if duration_seconds is not None and duration_seconds > max_seconds:
+            raise ValidationAppError(
+                f"an answer can be at most {max_seconds} seconds long",
+                details={"max_answer_seconds": max_seconds},
+            )
+        max_chars = self.settings.max_transcript_chars
+        if len(transcript) > max_chars:
+            raise ValidationAppError(
+                f"transcript exceeds {max_chars} characters", details={"max_transcript_chars": max_chars}
+            )
 
     @staticmethod
     def _resolve_question(
@@ -676,6 +748,8 @@ class InterviewService:
         if answered_count is None:
             answered_count = await self.store.count_answers(interview["id"])
         questions = interview.get("questions") or []
+        config = interview.get("config") or {}
+        deadline_at = config.get("deadline_at")  # only set when plans are enabled
         return {
             "id": interview["id"],
             "status": interview["status"],
@@ -687,6 +761,8 @@ class InterviewService:
             "updated_at": interview["updated_at"],
             "finished_at": interview.get("finished_at"),
             "error": interview.get("error"),
+            "duration_minutes": config.get("duration_minutes") if deadline_at else None,
+            "deadline_at": deadline_at,
         }
 
 

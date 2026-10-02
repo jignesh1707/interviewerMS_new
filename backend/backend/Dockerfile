@@ -14,7 +14,7 @@ COPY requirements.lock.txt .
 RUN pip install --no-cache-dir -r requirements.lock.txt
 
 COPY app ./app
-COPY models.yaml .
+COPY models.yaml plans.yaml ./
 
 # Run as an unprivileged user; /data is the only writable location.
 RUN useradd --system --uid 10001 --no-create-home appuser \

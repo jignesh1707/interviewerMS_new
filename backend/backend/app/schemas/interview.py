@@ -15,6 +15,9 @@ class InterviewConfig(BaseModel):
     analyze_per_answer: bool = True
     max_followups: int = Field(default=3, ge=0, le=15)
     followup_score_threshold: int = Field(default=75, ge=0, le=100)
+    # Interview length in minutes. Only used when plans are enabled: it must be a length the plan allows
+    # (default: the plan's default) and it fixes question_count and max_followups from plans.yaml.
+    duration_minutes: int | None = Field(default=None, ge=1, le=120)
 
 
 class CreateInterviewRequest(BaseModel):
@@ -25,6 +28,7 @@ class CreateInterviewRequest(BaseModel):
     callback_url: str | None = Field(default=None, max_length=2048)
     consent_to_ai_processing: bool | None = None
     external_ref: str | None = Field(default=None, min_length=1, max_length=200)
+    plan: str | None = Field(default=None, min_length=1, max_length=64)  # a plan from plans.yaml; default plan if omitted
     metadata: dict[str, Any] = Field(default_factory=dict)
     config: InterviewConfig = Field(default_factory=InterviewConfig)
 
@@ -88,6 +92,8 @@ class InterviewStatus(BaseModel):
     updated_at: str
     finished_at: str | None = None
     error: str | None = None
+    duration_minutes: int | None = None  # set when plans are enabled
+    deadline_at: str | None = None  # answers are refused after this moment (UTC, ISO 8601)
 
 
 class CreateInterviewResponse(BaseModel):

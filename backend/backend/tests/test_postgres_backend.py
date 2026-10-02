@@ -11,7 +11,7 @@ from app.config import get_settings
 from app.core.errors import NotFoundError
 from app.services import interview_service as interview_service_module
 from app.services import storage as storage_module
-from app.services.db import PostgresDatabase, postgres_schema_sql
+from app.services.db import TABLES, PostgresDatabase, postgres_schema_sql
 from app.services.storage import Store
 from tests.fakes import FakeRouter
 
@@ -82,7 +82,7 @@ def test_row_level_security_enabled_on_every_table(store, admin_url):
             "WHERE n.nspname = %s AND c.relkind = 'r'",
             (SCHEMA,),
         ).fetchall()
-    assert len(rows) == 4 and all(enabled for _, enabled in rows)
+    assert {name for name, _ in rows} == set(TABLES) and all(enabled for _, enabled in rows)
 
 
 def test_other_roles_cannot_read_candidate_data(store, admin_url):
@@ -320,3 +320,33 @@ def test_erase_by_external_ref_handles_more_than_one_batch(client, monkeypatch):
 )
 def test_as_role_handles_tcp_and_unix_socket_urls(url, expected):
     assert _as_role(url, "r") == expected
+
+
+def test_quota_ledger_on_postgres(store):
+    period = "2026-10"
+    assert store.quota_get("t1", "stu", period) == {"used_minutes": 0, "bonus_minutes": 0}
+    for _ in range(10):
+        assert store.quota_debit("t1", "stu", period, 15, allowance=150) is True
+    assert store.quota_debit("t1", "stu", period, 15, allowance=150) is False
+    store.quota_add_bonus("t1", "stu", period, 15)
+    assert store.quota_debit("t1", "stu", period, 15, allowance=150) is True
+    store.quota_credit("t1", "stu", period, 30)
+    assert store.quota_get("t1", "stu", period) == {"used_minutes": 135, "bonus_minutes": 15}
+
+
+def test_concurrent_quota_bookings_cannot_overspend_on_postgres(store):
+    results = []
+    lock = threading.Lock()
+
+    def book():
+        ok = store.quota_debit("t1", "racer", "2026-10", 15, allowance=150)
+        with lock:
+            results.append(ok)
+
+    threads = [threading.Thread(target=book) for _ in range(30)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert results.count(True) == 10
+    assert store.quota_get("t1", "racer", "2026-10")["used_minutes"] == 150

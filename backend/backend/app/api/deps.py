@@ -41,6 +41,19 @@ async def require_api_key(
     return matched
 
 
+async def enforce_student_limits(tenant: str, external_ref: str | None) -> None:
+    """Per-student rate limit and daily budget. Call it once the student is known (their external_ref).
+
+    Keyed on tenant and student so two tenants can reuse the same id. Skipped when no student id was sent.
+    """
+    if not external_ref:
+        return
+    settings = get_settings()
+    subject = f"student:{tenant}:{external_ref}"
+    await limiter.check(subject, settings.student_rate_limit_per_minute)
+    await budget.consume(subject, settings.student_daily_budget, scope="student")
+
+
 async def expensive_call(tenant: Annotated[str, Depends(require_api_key)]) -> None:
     """Stricter limit plus daily budget for endpoints that run LLM, speech-to-text or TTS work."""
     settings = get_settings()

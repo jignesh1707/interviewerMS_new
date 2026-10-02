@@ -108,11 +108,51 @@ When done, call `POST /api/v1/interviews/{id}/finish` to receive the report, or 
 
 `routing_trace` tells you which provider and tier served each step, and how many failovers happened.
 
+## 4b. Plans, student quota and interview length
+
+Off by default. Set `PLANS_ENABLED=true` and edit `backend/plans.yaml` (no code change, restart to apply).
+
+```yaml
+profiles:                       # what each interview length contains
+  15: {question_count: 7, max_followups: 2}
+  20: {question_count: 9, max_followups: 3}
+  25: {question_count: 12, max_followups: 3}
+plans:
+  standard:
+    included_minutes: 150       # 10 x 15, 8 x 20 or 6 x 25 minute interviews, or any mix
+    period: monthly             # "none" = one lifetime balance (a one-time pack)
+    durations: [15, 20, 25]
+    default_duration: 15
+```
+
+When enabled:
+
+- **Student id is required.** Send `external_ref` on create. The quota is kept per tenant and `external_ref`.
+- **Choose a length** with `config.duration_minutes` (default: the plan's default). A length the plan does not allow returns 422. The length sets `question_count` and `max_followups`; values you send for those are replaced.
+- **Booking debits the full length** when the interview is created. If the student does not have enough minutes the call returns **402** with `code: quota_exceeded` and `details.remaining_minutes`. If creation fails (for example the question model is down) the minutes are given back.
+- **Server-side deadline.** The create response has `interview.duration_minutes` and `interview.deadline_at` (length plus `grace_seconds`, counted from when the questions are ready). After it, answers return **409** `time_limit_reached`; `finish` still works so the student gets the report. Audio is refused before any transcription work is spent.
+- **Per-answer caps** (always on): `MAX_ANSWER_SECONDS` (180) and `MAX_TRANSCRIPT_CHARS` (4000). Longer answers return 422 and are not stored.
+- `POST /api/v1/interviews` and `/upload` also accept an optional `plan` (a name from `plans.yaml`; default plan otherwise).
+
+Balance and top-ups:
+
+```bash
+curl -s  http://localhost:8080/api/v1/quotas/STUDENT_ID -H "X-API-Key: $KEY"
+# {"plan":"standard","period":"monthly","period_key":"2026-10","included_minutes":150,
+#  "bonus_minutes":0,"used_minutes":45,"remaining_minutes":105,"allowed_durations":[15,20,25]}
+
+curl -sX POST http://localhost:8080/api/v1/quotas/STUDENT_ID/grant -H "X-API-Key: $KEY"   -H "Content-Type: application/json" -d '{"minutes": 30}'     # add minutes for the current period
+```
+
+**Per-student rate limits** (independent of `PLANS_ENABLED`): once an interview has an `external_ref`, its LLM and speech-backed calls (create, answer, audio answer, finish) also count against that student: `STUDENT_RATE_LIMIT_PER_MINUTE` (30) and `STUDENT_DAILY_BUDGET` (200 per UTC day), `0` to turn either off. They are kept per tenant and student, shared across machines through Redis, and return 429 like the tenant limits. One student cannot use up the tenant's shared limits on their own, but the tenant limits still apply on top. The standalone `/speech/transcribe` and `/speech/synthesize` calls carry no student id, so only the tenant limits cover them.
+
+Billing stays in your main app: take the payment there, then call `grant` for any top-up. Quota rows are keyed by `external_ref` and are not removed by the erase-by-user endpoint, so erasing a student does not reset their balance.
+
 ## 5. Webhooks
 
 `callback_url` must be `https`, must not embed credentials, and must resolve only to public addresses (private, loopback and link-local targets are rejected, and redirects are not followed). Set `CALLBACK_ALLOWED_HOSTS=resumetojob.example.com` to restrict it to your own receiver. The check runs again at delivery time.
 
-Limits (all configurable): `MAX_DOC_UPLOAD_MB` (5), `MAX_TEXT_CHARS` (100000), `MAX_TRANSCRIPT_CHARS` (20000), `MAX_METADATA_BYTES` (16384), `STT_MAX_UPLOAD_MB` (25). Oversized requests return 413 or 422.
+Limits (all configurable): `MAX_DOC_UPLOAD_MB` (5), `MAX_TEXT_CHARS` (100000), `MAX_TRANSCRIPT_CHARS` (4000, one answer), `MAX_ANSWER_SECONDS` (180), `MAX_METADATA_BYTES` (16384), `STT_MAX_UPLOAD_MB` (25). Oversized requests return 413 or 422.
 
 Events:
 

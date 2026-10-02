@@ -5,7 +5,7 @@ from pydantic import ValidationError
 
 from fastapi import APIRouter, Depends, File, Form, Query, Response, UploadFile
 
-from app.api.deps import expensive_call, require_api_key
+from app.api.deps import enforce_student_limits, expensive_call, require_api_key
 from app.config import get_settings
 from app.core.errors import ValidationAppError
 from app.core.limits import read_capped
@@ -28,6 +28,7 @@ router = APIRouter(prefix="/interviews", tags=["interviews"], dependencies=[Depe
 
 @router.post("", response_model=CreateInterviewResponse, status_code=201, dependencies=[Depends(expensive_call)])
 async def create_interview(payload: CreateInterviewRequest, tenant: Tenant) -> CreateInterviewResponse:
+    await enforce_student_limits(tenant, payload.external_ref)
     service = get_interview_service()
     result = await service.create_interview(payload, tenant_id=tenant)
     return CreateInterviewResponse(
@@ -46,6 +47,7 @@ async def create_interview_with_files(
     callback_url: Annotated[str | None, Form()] = None,
     consent_to_ai_processing: Annotated[bool | None, Form()] = None,
     external_ref: Annotated[str | None, Form(max_length=200)] = None,
+    plan: Annotated[str | None, Form(max_length=64)] = None,
     config_json: Annotated[str | None, Form()] = None,
     metadata_json: Annotated[str | None, Form()] = None,
     resume_file: Annotated[UploadFile | None, File()] = None,
@@ -62,6 +64,7 @@ async def create_interview_with_files(
             callback_url=callback_url,
             consent_to_ai_processing=consent_to_ai_processing,
             external_ref=external_ref,
+            plan=plan,
             metadata=metadata or {},
             config=config or {},
         )
@@ -75,6 +78,7 @@ async def create_interview_with_files(
     if jd_file and jd_file.filename:
         jd_bytes = (jd_file.filename, await read_capped(jd_file, doc_limit, "jd_file"))
 
+    await enforce_student_limits(tenant, payload.external_ref)
     service = get_interview_service()
     result = await service.create_interview(
         payload, resume_bytes=resume_bytes, jd_bytes=jd_bytes, tenant_id=tenant
@@ -130,7 +134,8 @@ async def get_answers(interview_id: str, tenant: Tenant) -> dict:
 
 @router.post("/{interview_id}/answers", response_model=AnswerResponse, dependencies=[Depends(expensive_call)])
 async def submit_text_answer(interview_id: str, tenant: Tenant, payload: AnswerTextRequest) -> AnswerResponse:
-    await get_async_store().get_interview_for_tenant(interview_id, tenant)
+    interview = await get_async_store().get_interview_for_tenant(interview_id, tenant)
+    await enforce_student_limits(tenant, interview.get("external_ref"))
     service = get_interview_service()
     result = await service.submit_answer(
         interview_id,
@@ -150,12 +155,15 @@ async def submit_audio_answer(
     audio: Annotated[UploadFile, File()],
     duration_seconds: Annotated[float | None, Form()] = None,
 ) -> AnswerResponse:
-    await get_async_store().get_interview_for_tenant(interview_id, tenant)
+    interview = await get_async_store().get_interview_for_tenant(interview_id, tenant)
+    await enforce_student_limits(tenant, interview.get("external_ref"))  # before any speech-to-text work is spent
+    service = get_interview_service()
+    service.ensure_time_remaining(interview)
     content = await read_capped(audio, get_settings().stt_max_upload_mb * 1024 * 1024, "audio")
     filename = audio.filename or "answer.webm"
     transcription = await stt.transcribe_bytes(content, filename)
+    service.enforce_answer_caps(transcript="", duration_seconds=transcription.get("duration_seconds"))
 
-    service = get_interview_service()
     audio_path = service.save_audio(interview_id, filename, content)
     duration = duration_seconds or transcription.get("duration_seconds")
     result = await service.submit_answer(
@@ -196,7 +204,8 @@ async def get_transcript(interview_id: str, tenant: Tenant) -> dict:
 async def finish_interview(interview_id: str, tenant: Tenant) -> ReportResponse:
     service = get_interview_service()
     store = get_async_store()
-    await store.get_interview_for_tenant(interview_id, tenant)
+    interview = await store.get_interview_for_tenant(interview_id, tenant)
+    await enforce_student_limits(tenant, interview.get("external_ref"))
     report = await service.finish_interview(interview_id)
     saved = await store.get_report(interview_id)
     return ReportResponse(

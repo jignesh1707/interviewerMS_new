@@ -74,7 +74,7 @@ class FakeRouter:
         return defaults.get(task, {})
 
     async def complete(self, task: str, messages: list[Any], **kwargs: Any) -> LLMResult:
-        self.calls.append({"task": task, "tier": kwargs.get("tier")})
+        self.calls.append({"task": task, "tier": kwargs.get("tier"), "messages": messages})
         return LLMResult(
             text="{}",
             provider="fake",
