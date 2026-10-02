@@ -335,10 +335,10 @@ def test_audio_not_retained_by_default(test_dir):
     assert not (get_settings().storage_dir / "audio" / "abc").exists()
 
 
-def test_audio_retained_and_deleted_with_interview(monkeypatch):
+async def test_audio_retained_and_deleted_with_interview(monkeypatch):
     monkeypatch.setattr(get_settings(), "retain_audio", True)
     service = interview_service_module.InterviewService(router=FakeRouter())
-    interview = service.store.create_interview(
+    interview = service.store.sync.create_interview(
         role="Eng", candidate_name=None, resume_text="x" * 40, jd_text=None,
         config={}, callback_url=None, metadata={}, tenant_id="t",
     )
@@ -347,32 +347,32 @@ def test_audio_retained_and_deleted_with_interview(monkeypatch):
     from pathlib import Path
 
     assert Path(path).exists()
-    service.delete_interview(interview["id"])
+    await service.delete_interview(interview["id"])
     assert not Path(path).exists()
 
 
-def test_retention_purges_only_expired(monkeypatch):
+async def test_retention_purges_only_expired(monkeypatch):
     service = interview_service_module.InterviewService(router=FakeRouter())
-    old = service.store.create_interview(
+    old = service.store.sync.create_interview(
         role="Old", candidate_name=None, resume_text="x" * 40, jd_text=None,
         config={}, callback_url=None, metadata={}, tenant_id="t",
     )
-    fresh = service.store.create_interview(
+    fresh = service.store.sync.create_interview(
         role="Fresh", candidate_name=None, resume_text="x" * 40, jd_text=None,
         config={}, callback_url=None, metadata={}, tenant_id="t",
     )
-    service.store._execute(
+    service.store.sync._execute(
         "UPDATE interviews SET created_at = ? WHERE id = ?", ("2000-01-01T00:00:00+00:00", old["id"])
     )
     monkeypatch.setattr(get_settings(), "retention_days", 30)
-    assert service.purge_expired() >= 1
-    assert service.store.get_interview_or_none(old["id"]) is None
-    assert service.store.get_interview_or_none(fresh["id"]) is not None
+    assert await service.purge_expired() >= 1
+    assert service.store.sync.get_interview_or_none(old["id"]) is None
+    assert service.store.sync.get_interview_or_none(fresh["id"]) is not None
 
 
-def test_retention_disabled_by_default():
+async def test_retention_disabled_by_default():
     assert get_settings().retention_days == 0
-    assert interview_service_module.InterviewService(router=FakeRouter()).purge_expired() == 0
+    assert await interview_service_module.InterviewService(router=FakeRouter()).purge_expired() == 0
 
 
 # ---- 10. provider policy and consent ------------------------------------------------------

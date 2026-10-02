@@ -21,7 +21,7 @@ async def require_api_key(
     settings = get_settings()
     client = _client_id(request)
     fail_key = f"authfail:{client}"
-    if limiter.peek_blocked(fail_key, settings.auth_fail_limit_per_minute):
+    if await limiter.is_blocked(fail_key, settings.auth_fail_limit_per_minute):
         raise RateLimitError(
             "too many failed authentication attempts", headers={"Retry-After": "60"}
         )
@@ -35,14 +35,14 @@ async def require_api_key(
         if secrets.compare_digest(presented, key):
             matched = tenant
     if matched is None:
-        limiter.record(fail_key)
+        await limiter.record(fail_key)
         raise AuthError("invalid API key")
-    limiter.check(f"tenant:{matched}", settings.rate_limit_per_minute)
+    await limiter.check(f"tenant:{matched}", settings.rate_limit_per_minute)
     return matched
 
 
 async def expensive_call(tenant: Annotated[str, Depends(require_api_key)]) -> None:
     """Stricter limit plus daily budget for endpoints that run LLM, speech-to-text or TTS work."""
     settings = get_settings()
-    limiter.check(f"expensive:{tenant}", settings.rate_limit_expensive_per_minute)
-    budget.consume(tenant, settings.daily_expensive_budget)
+    await limiter.check(f"expensive:{tenant}", settings.rate_limit_expensive_per_minute)
+    await budget.consume(tenant, settings.daily_expensive_budget)

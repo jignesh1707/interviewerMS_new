@@ -4,8 +4,9 @@ from app.api.deps import require_api_key
 from app.config import get_settings
 from app.core.logging import get_logger
 from app.core.errors import ServiceUnavailableError
+from app.core.ratelimit import redis_status
 from app.llm.router import get_router
-from app.services.storage import get_store
+from app.services.storage import get_async_store
 from app.voice import stt, tts
 
 logger = get_logger(__name__)
@@ -21,7 +22,7 @@ async def health() -> dict:
 async def ready() -> dict:
     """Unauthenticated probe for orchestrators: reports only whether the service is usable."""
     try:
-        get_store().list_interviews("__ready__", limit=1)
+        await get_async_store().ping()
     except Exception:  # noqa: BLE001
         logger.exception("readiness_check_failed")
         raise ServiceUnavailableError("storage unavailable") from None
@@ -38,6 +39,8 @@ async def ready_details() -> dict:
             name: model_router.provider_configured(name)
             for name in ("deepseek", "openrouter", "openai", "anthropic")
         },
+        "database": get_settings().database_url and "postgres" or "sqlite",
+        "redis": await redis_status(),
         "voice": {
             "stt_model_loaded": stt.model_ready(),
             "stt_model": settings.whisper_model,

@@ -11,6 +11,10 @@ os.environ["DEEPSEEK_API_KEY"] = ""
 os.environ["OPENAI_API_KEY"] = ""
 os.environ["ANTHROPIC_API_KEY"] = ""
 os.environ["WEBHOOK_URL"] = ""
+# Run the whole suite against Postgres by setting TEST_DATABASE_URL (CI does this in a second job).
+if os.environ.get("TEST_DATABASE_URL"):
+    os.environ["DATABASE_URL"] = os.environ["TEST_DATABASE_URL"]
+    os.environ["DB_SCHEMA"] = "interviewer_test"
 
 import pytest  # noqa: E402
 

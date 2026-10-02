@@ -90,10 +90,10 @@ def test_ready_reports_503_when_storage_down(client, monkeypatch):
     import app.api.routes_system as routes_system
 
     class Broken:
-        def list_interviews(self, *args, **kwargs):
+        async def ping(self):
             raise RuntimeError("db gone at /secret/path")
 
-    monkeypatch.setattr(routes_system, "get_store", lambda: Broken())
+    monkeypatch.setattr(routes_system, "get_async_store", lambda: Broken())
     response = client.get("/api/v1/ready")
     assert response.status_code == 503
     assert "secret" not in response.text
