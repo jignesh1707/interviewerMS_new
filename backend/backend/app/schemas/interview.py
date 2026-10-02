@@ -1,11 +1,15 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+import json
+
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+from app.config import get_settings
 
 
 class InterviewConfig(BaseModel):
     question_count: int = Field(default=8, ge=3, le=15)
-    focus_areas: list[str] = Field(default_factory=list)
+    focus_areas: list[str] = Field(default_factory=list, max_length=20)
     language: str = "en"
     ask_followups: bool = True
     analyze_per_answer: bool = True
@@ -16,11 +20,26 @@ class InterviewConfig(BaseModel):
 class CreateInterviewRequest(BaseModel):
     role: str = Field(min_length=2, max_length=200)
     candidate_name: str | None = Field(default=None, max_length=200)
-    resume_text: str | None = None
-    jd_text: str | None = None
-    callback_url: str | None = None
+    resume_text: str | None = Field(default=None, max_length=200_000)
+    jd_text: str | None = Field(default=None, max_length=200_000)
+    callback_url: str | None = Field(default=None, max_length=2048)
+    consent_to_ai_processing: bool | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     config: InterviewConfig = Field(default_factory=InterviewConfig)
+
+    @model_validator(mode="after")
+    def enforce_size_limits(self) -> "CreateInterviewRequest":
+        settings = get_settings()
+        for name in ("resume_text", "jd_text"):
+            value = getattr(self, name)
+            if value is not None and len(value) > settings.max_text_chars:
+                raise ValueError(f"{name} exceeds {settings.max_text_chars} characters")
+        if len(json.dumps(self.metadata, default=str)) > settings.max_metadata_bytes:
+            raise ValueError(f"metadata exceeds {settings.max_metadata_bytes} bytes")
+        for area in self.config.focus_areas:
+            if len(area) > 200:
+                raise ValueError("focus_areas entries must be at most 200 characters")
+        return self
 
 
 class Question(BaseModel):
@@ -39,8 +58,16 @@ class Question(BaseModel):
 class AnswerTextRequest(BaseModel):
     question_id: str | None = Field(default=None, min_length=1)
     question_index: int | None = Field(default=None, ge=0)
-    transcript: str = Field(min_length=1)
+    transcript: str = Field(min_length=1, max_length=200_000)
     duration_seconds: float | None = Field(default=None, ge=0)
+
+    @field_validator("transcript")
+    @classmethod
+    def limit_transcript(cls, value: str) -> str:
+        limit = get_settings().max_transcript_chars
+        if len(value) > limit:
+            raise ValueError(f"transcript exceeds {limit} characters")
+        return value
 
     @model_validator(mode="after")
     def require_question_reference(self) -> "AnswerTextRequest":

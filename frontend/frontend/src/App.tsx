@@ -70,7 +70,11 @@ function useRecorder() {
 }
 
 export default function App() {
-  const [apiKey, setApiKey] = useState(() => localStorage.getItem('vi_api_key') || 'dev-key-change-me')
+  // Session-scoped (cleared when the tab closes) and never pre-filled with a shared default key.
+  // For local demos you can set VITE_DEV_API_KEY in frontend/.env.local; it is ignored in production builds.
+  const [apiKey, setApiKey] = useState(
+    () => sessionStorage.getItem('vi_api_key') || (import.meta.env.DEV ? import.meta.env.VITE_DEV_API_KEY || '' : ''),
+  )
   const [stage, setStage] = useState<Stage>('setup')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
@@ -85,7 +89,7 @@ export default function App() {
   const recorder = useRecorder()
 
   useEffect(() => {
-    localStorage.setItem('vi_api_key', apiKey)
+    sessionStorage.setItem('vi_api_key', apiKey)
   }, [apiKey])
 
   const refreshModels = async () => {

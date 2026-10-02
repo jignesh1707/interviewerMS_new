@@ -1,9 +1,11 @@
 from app.llm.providers.base import LLMMessage
+from app.prompts.guard import UNTRUSTED_NOTICE, untrusted
 
 SYSTEM = (
     "You are a strict but constructive interview answer evaluator. "
     "You judge answers against the STAR framework and score them honestly. "
     "You always return strict JSON and never wrap it in prose."
+    + UNTRUSTED_NOTICE
 )
 
 
@@ -19,7 +21,7 @@ def build_answer_analysis_messages(
 Question: {question}
 
 Answer transcript:
-{transcript[:6000]}
+{untrusted("candidate_answer", transcript, 6000)}
 
 Deterministic text metrics (already computed):
 - word_count: {metrics.get("word_count")}
@@ -53,7 +55,8 @@ def build_coaching_messages(*, question: str, transcript: str) -> list[LLMMessag
     user = f"""Give ONE actionable coaching tip (max 30 words) to improve the next answer to this question.
 
 Question: {question}
-Answer: {transcript[:2000]}
+Answer:
+{untrusted("candidate_answer", transcript, 2000)}
 
 Return JSON exactly: {{"tip": string}}"""
     return [LLMMessage(role="system", content=SYSTEM), LLMMessage(role="user", content=user)]

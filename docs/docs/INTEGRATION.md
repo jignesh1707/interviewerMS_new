@@ -11,7 +11,11 @@ Send the API key on every `/api/v1` request (except `/health` and `/ready`):
 X-API-Key: <key>
 ```
 
-Configure accepted keys on the service with `API_KEYS=key-one,key-two`.
+Configure accepted keys on the service with `API_KEYS=key-one,key-two`, or `API_KEYS=resumetojob:<key>` to name the tenant.
+
+Each key maps to a tenant. A tenant can only list, read, answer and finish interviews it created; anything else returns 404. Give resumetojob its own key.
+
+Outside `ENVIRONMENT=development` the service refuses to start if a key is the default, shorter than 32 characters, or `CORS_ORIGINS` is `*`. Generate keys with `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
 
 ## 2. Two integration modes
 
@@ -106,6 +110,10 @@ When done, call `POST /api/v1/interviews/{id}/finish` to receive the report, or 
 
 ## 5. Webhooks
 
+`callback_url` must be `https`, must not embed credentials, and must resolve only to public addresses (private, loopback and link-local targets are rejected, and redirects are not followed). Set `CALLBACK_ALLOWED_HOSTS=resumetojob.example.com` to restrict it to your own receiver. The check runs again at delivery time.
+
+Limits (all configurable): `MAX_DOC_UPLOAD_MB` (5), `MAX_TEXT_CHARS` (100000), `MAX_TRANSCRIPT_CHARS` (20000), `MAX_METADATA_BYTES` (16384), `STT_MAX_UPLOAD_MB` (25). Oversized requests return 413 or 422.
+
 Events:
 
 - `interview.created` — questions are ready.
@@ -121,16 +129,25 @@ Payload:
 Headers:
 
 - `X-Interview-Event`
-- `X-Interview-Signature` — HMAC-SHA256 of the raw request body using `WEBHOOK_SECRET`
+- `X-Interview-Delivery` — unique id per delivery, use it to deduplicate retries
+- `X-Interview-Timestamp` — unix seconds when the request was sent
+- `X-Interview-Signature-V2` — HMAC-SHA256 of `<timestamp>.<raw body>` using `WEBHOOK_SECRET`. Verify this one and reject timestamps older than ~5 minutes to block replays.
+- `X-Interview-Signature` — legacy HMAC-SHA256 of the raw body only (no replay protection)
+
+Outside `ENVIRONMENT=development` the service will not send unsigned webhooks: set `WEBHOOK_SECRET`.
 
 Python verification:
 
 ```python
 import hashlib, hmac
 
-def verify(raw_body: bytes, signature: str, secret: str) -> bool:
-    expected = hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, signature)
+import time
+
+def verify(raw_body: bytes, timestamp: str, signature_v2: str, secret: str, tolerance: int = 300) -> bool:
+    if abs(time.time() - int(timestamp)) > tolerance:
+        return False
+    expected = hmac.new(secret.encode(), timestamp.encode() + b"." + raw_body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature_v2)
 ```
 
 Node verification:
@@ -138,13 +155,15 @@ Node verification:
 ```javascript
 const crypto = require('crypto')
 
-function verify(rawBody, signature, secret) {
-  const expected = crypto.createHmac('sha256', secret).update(rawBody).digest('hex')
-  return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature))
+function verify(rawBody, timestamp, signatureV2, secret, toleranceSeconds = 300) {
+  if (Math.abs(Date.now() / 1000 - Number(timestamp)) > toleranceSeconds) return false
+  const expected = crypto.createHmac('sha256', secret).update(`${timestamp}.`).update(rawBody).digest('hex')
+  const a = Buffer.from(expected), b = Buffer.from(signatureV2)
+  return a.length === b.length && crypto.timingSafeEqual(a, b)
 }
 ```
 
-Unset `WEBHOOK_SECRET` to skip signing (not recommended for production).
+In development only, an unset `WEBHOOK_SECRET` sends unsigned webhooks.
 
 ## 6. Polling alternative
 
@@ -160,11 +179,10 @@ The demo frontend is a plain Vite app. To embed it:
 
 1. Build it with `npm run build` in `frontend`.
 2. Serve `frontend/dist` from the main app and proxy `/api` to this service.
-3. Pass the API key into the UI (the demo stores it in `localStorage`; for production inject it from
-   your authenticated session instead of asking the user).
+3. Do not ship the service API key to browsers. The demo keeps a pasted key in `sessionStorage`; in
+   production have your backend call this service, or proxy `/api` and attach the key server-side.
 
-The dev server already allows `*.monkeycode-ai.live` hosts and proxies `/api`, so it works behind the
-platform preview.
+The dev server listens on loopback and proxies `/api`. Set `VITE_HOST` and `VITE_ALLOWED_HOSTS` to expose it.
 
 ## 8. Operational notes
 
@@ -174,3 +192,12 @@ platform preview.
   `GET /api/v1/interviews/{id}/events`.
 - Scale horizontally only with a shared database or by pinning a session to one instance, since
   storage is local SQLite.
+
+## 9. Security and privacy controls
+
+- **Rate limits** are per tenant: `RATE_LIMIT_PER_MINUTE` for all calls, `RATE_LIMIT_EXPENSIVE_PER_MINUTE` plus a `DAILY_EXPENSIVE_BUDGET` for anything that runs an LLM, speech-to-text or TTS. Limits return 429 with `Retry-After`. Repeated bad keys from one address are locked out for a minute. Limits live in process memory, so also rate-limit at your gateway when running several workers.
+- **Documents** are validated (PDF/ZIP signature, page count, decompressed size), then parsed in a child process with a hard timeout.
+- **Prompt injection:** candidate text is fenced in `<untrusted_...>` blocks, the model is told to treat it as data, and LLM scores are bounded to the deterministic baseline plus or minus `SCORE_CLAMP_DELTA` (10 when injection phrasing is detected). Suspicious resumes, JDs and answers raise an `integrity.possible_prompt_injection` event and `metrics.integrity_flags`. Treat model scores as advisory, never as the only hiring signal.
+- **Erasure and retention:** `DELETE /api/v1/interviews/{id}` removes the interview, answers, report, events and any audio. Set `RETENTION_DAYS` to purge old interviews automatically. Audio is discarded after transcription unless `RETAIN_AUDIO=true`.
+- **Encryption at rest is not done in the app.** Run the service on an encrypted volume (data lives under the storage directory: SQLite file and optional audio).
+- **Third-party AI processing:** resumes, JDs and answers are sent to whichever of OpenAI, DeepSeek and Anthropic is configured. Use `LLM_DISABLED_PROVIDERS=deepseek` to exclude a vendor, and set `REQUIRE_CONSENT=true` so each interview must be created with `"consent_to_ai_processing": true` (recorded in the event log). Your privacy policy must cover this processing.

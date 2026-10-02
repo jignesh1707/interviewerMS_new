@@ -1,7 +1,11 @@
 import io
 import re
+import subprocess
+import sys
+import zipfile
 from pathlib import Path
 
+from app.config import BASE_DIR, get_settings
 from app.core.errors import ValidationAppError
 
 SUPPORTED_SUFFIXES = {".pdf", ".docx", ".txt", ".md"}
@@ -39,14 +43,23 @@ def extract_text(filename: str, content: bytes) -> str:
             f"unsupported file type '{suffix}'",
             details={"supported": sorted(SUPPORTED_SUFFIXES)},
         )
+    settings = get_settings()
     if suffix == ".pdf":
-        text = _extract_pdf(content)
+        if not content.lstrip()[:5].startswith(b"%PDF"):
+            raise ValidationAppError("file is not a valid PDF")
+        text = _run_worker("pdf", content)
     elif suffix == ".docx":
-        text = _extract_docx(content)
+        _check_docx_archive(content, settings.max_docx_uncompressed_mb * 1024 * 1024)
+        text = _run_worker("docx", content)
     else:
         text = content.decode("utf-8", errors="ignore")
 
     cleaned = normalize_text(text)
+    if len(cleaned) > settings.max_text_chars:
+        raise ValidationAppError(
+            f"document text exceeds {settings.max_text_chars} characters",
+            details={"filename": filename},
+        )
     if len(cleaned) < 30:
         raise ValidationAppError(
             "could not extract readable text from document (it may be a scanned image)",
@@ -55,22 +68,37 @@ def extract_text(filename: str, content: bytes) -> str:
     return cleaned
 
 
-def _extract_pdf(content: bytes) -> str:
+def _check_docx_archive(content: bytes, max_uncompressed: int) -> None:
+    """Reject non-zip files and zip bombs before handing the archive to python-docx."""
     try:
-        from pypdf import PdfReader
-    except ImportError as exc:
-        raise ValidationAppError("pypdf is not installed; cannot parse PDF") from exc
-    reader = PdfReader(io.BytesIO(content))
-    return "\n".join((page.extract_text() or "") for page in reader.pages)
+        with zipfile.ZipFile(io.BytesIO(content)) as archive:
+            infos = archive.infolist()
+            if len(infos) > 2000:
+                raise ValidationAppError("DOCX archive has too many entries")
+            if sum(info.file_size for info in infos) > max_uncompressed:
+                raise ValidationAppError("DOCX archive expands to more than the allowed size")
+    except zipfile.BadZipFile as exc:
+        raise ValidationAppError("file is not a valid DOCX") from exc
 
 
-def _extract_docx(content: bytes) -> str:
+def _run_worker(kind: str, content: bytes) -> str:
+    settings = get_settings()
+    command = [sys.executable, "-m", "app.services._doc_worker", kind, str(settings.max_pdf_pages)]
     try:
-        from docx import Document
-    except ImportError as exc:
-        raise ValidationAppError("python-docx is not installed; cannot parse DOCX") from exc
-    document = Document(io.BytesIO(content))
-    return "\n".join(paragraph.text for paragraph in document.paragraphs)
+        process = subprocess.run(
+            command,
+            input=content,
+            capture_output=True,
+            timeout=settings.doc_parse_timeout_seconds,
+            cwd=str(BASE_DIR),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ValidationAppError("document took too long to parse") from exc
+    if process.returncode == 3:
+        raise ValidationAppError(f"PDF has more than {settings.max_pdf_pages} pages")
+    if process.returncode != 0:
+        raise ValidationAppError(f"could not parse {kind.upper()} document")
+    return process.stdout.decode("utf-8", errors="ignore")
 
 
 def normalize_text(text: str) -> str:

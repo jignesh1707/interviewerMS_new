@@ -1,14 +1,21 @@
+import asyncio
+import os
+import shutil
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from app.config import get_settings
-from app.core.errors import AllProvidersFailedError, ValidationAppError
+from app.core.errors import AllProvidersFailedError, ConflictError, ValidationAppError
 from app.core.logging import get_logger
+from app.core.url_safety import validate_callback_url
 from app.llm.providers.base import LLMMessage
 from app.llm.router import ModelRouter, get_router
 from app.llm.safety import redact_secrets
 from app.llm.tasks import LLMTask
+from app.prompts.guard import clamp_scores, detect_injection
+from app.voice.audio import safe_audio_suffix
 from app.prompts.analysis import build_answer_analysis_messages, build_coaching_messages
 from app.prompts.questions import build_followup_messages, build_question_generation_messages, build_resume_summary_messages
 from app.prompts.report import (
@@ -22,6 +29,13 @@ from app.services.storage import Store, get_store
 from app.services.text_analysis import aggregate_heuristic_scores, analyze_transcript, heuristic_score
 
 logger = get_logger(__name__)
+
+
+def _restrict(path: Path, mode: int) -> None:
+    try:
+        os.chmod(path, mode)
+    except OSError:
+        pass
 
 
 class InterviewService:
@@ -38,13 +52,21 @@ class InterviewService:
         jd_bytes: tuple[str, bytes] | None = None,
         resume_summary_text: str | None = None,
         jd_summary_text: str | None = None,
+        tenant_id: str | None = None,
     ) -> dict[str, Any]:
+        consent = getattr(payload, "consent_to_ai_processing", None)
+        if self.settings.require_consent and consent is not True:
+            raise ValidationAppError(
+                "consent_to_ai_processing must be true: candidate data is sent to external AI providers"
+            )
+        if payload.callback_url:
+            await asyncio.to_thread(validate_callback_url, payload.callback_url)
         resume_text = payload.resume_text
         jd_text = payload.jd_text
         if resume_bytes:
-            resume_text = parser.extract_text(resume_bytes[0], resume_bytes[1])
+            resume_text = await asyncio.to_thread(parser.extract_text, resume_bytes[0], resume_bytes[1])
         if jd_bytes:
-            jd_text = parser.extract_text(jd_bytes[0], jd_bytes[1])
+            jd_text = await asyncio.to_thread(parser.extract_text, jd_bytes[0], jd_bytes[1])
 
         if not resume_text and not jd_text:
             raise ValidationAppError("provide at least a resume or a job description (text or file)")
@@ -62,9 +84,20 @@ class InterviewService:
             config=config,
             callback_url=payload.callback_url,
             metadata=payload.metadata,
+            tenant_id=tenant_id,
         )
         interview_id = interview["id"]
-        self.store.add_event(interview_id, "interview.created", {"role": payload.role})
+        self.store.add_event(
+            interview_id,
+            "interview.created",
+            {"role": payload.role, "consent_to_ai_processing": consent},
+        )
+        for source, text in (("resume", resume_text), ("jd", jd_text)):
+            flags = detect_injection(text or "")
+            if flags:
+                self.store.add_event(
+                    interview_id, "integrity.possible_prompt_injection", {"source": source, "phrases": flags}
+                )
 
         resume_narrative = None
         if resume_text:
@@ -192,13 +225,20 @@ class InterviewService:
             raise ValidationAppError("interview has no questions yet")
         if not transcript.strip():
             raise ValidationAppError("transcript is empty; no speech detected")
+        if interview.get("status") == "completed":
+            raise ConflictError("interview is already completed; no more answers can be submitted")
 
         resolved_index, target = self._resolve_question(questions, question_id, question_index)
+        if any(item.get("question_id") == target["id"] for item in self.store.list_answers(interview_id)):
+            raise ConflictError(
+                "this question has already been answered", details={"question_id": target["id"]}
+            )
         question_text = target["question"]
         metrics = analyze_transcript(transcript, duration_seconds)
         heuristics = heuristic_score(metrics)
 
         analysis = None
+        injection_flags: list[str] = []
         router_trace: dict[str, Any] = {}
         config = interview.get("config") or {}
 
@@ -215,6 +255,17 @@ class InterviewService:
             )
             if routing:
                 router_trace["analysis"] = routing
+            injection_flags = detect_injection(transcript)
+            analysis = clamp_scores(
+                analysis, heuristics, 10 if injection_flags else self.settings.score_clamp_delta
+            )
+        if injection_flags:
+            metrics["integrity_flags"] = ["possible_prompt_injection"]
+            self.store.add_event(
+                interview_id,
+                "integrity.possible_prompt_injection",
+                {"source": "answer", "question_index": resolved_index, "phrases": injection_flags},
+            )
 
         overall = float(
             (analysis or {}).get("scores", {}).get("overall", heuristics.get("overall", 0))
@@ -386,6 +437,10 @@ class InterviewService:
 
     async def finish_interview(self, interview_id: str, *, callback_url: str | None = None) -> dict[str, Any]:
         interview = self.store.get_interview(interview_id)
+        if interview.get("status") == "completed":
+            saved = self.store.get_report(interview_id)
+            if saved:  # idempotent: do not pay for a second scoring run
+                return saved["payload"]
         answers = self.store.list_answers(interview_id)
         if not answers:
             raise ValidationAppError("cannot finish an interview with no recorded answers")
@@ -581,13 +636,36 @@ class InterviewService:
             "likely_followup_topics": match.get("missing", [])[:5],
         }
 
-    def save_audio(self, interview_id: str, filename: str, content: bytes) -> str:
-        suffix = Path(filename).suffix or ".webm"
+    def save_audio(self, interview_id: str, filename: str, content: bytes) -> str | None:
+        """Persist uploaded audio only when RETAIN_AUDIO is on; by default only the transcript is kept."""
+        if not self.settings.retain_audio:
+            return None
+        suffix = safe_audio_suffix(filename)
         directory = self.settings.storage_dir / "audio" / interview_id
         directory.mkdir(parents=True, exist_ok=True)
+        _restrict(directory, 0o700)
         target = directory / f"{uuid.uuid4().hex}{suffix}"
         target.write_bytes(content)
+        _restrict(target, 0o600)
         return str(target)
+
+    def delete_interview(self, interview_id: str) -> None:
+        """Erase an interview: database rows and any stored audio."""
+        self.store.delete_interview(interview_id)
+        shutil.rmtree(self.settings.storage_dir / "audio" / interview_id, ignore_errors=True)
+        logger.info("interview_deleted id=%s", interview_id)
+
+    def purge_expired(self) -> int:
+        days = self.settings.retention_days
+        if days <= 0:
+            return 0
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        expired = self.store.list_expired_interview_ids(cutoff)
+        for interview_id in expired:
+            self.delete_interview(interview_id)
+        if expired:
+            logger.info("retention_purge deleted=%d older_than_days=%d", len(expired), days)
+        return len(expired)
 
     def build_status(self, interview: dict[str, Any]) -> dict[str, Any]:
         answers = self.store.list_answers(interview["id"])

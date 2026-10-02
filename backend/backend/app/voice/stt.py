@@ -6,6 +6,7 @@ from pathlib import Path
 from app.config import get_settings
 from app.core.errors import SpeechUnavailableError, ValidationAppError
 from app.core.logging import get_logger
+from app.voice.audio import safe_audio_suffix
 
 logger = get_logger(__name__)
 
@@ -85,7 +86,7 @@ async def transcribe_bytes(content: bytes, filename: str = "answer.webm") -> dic
         )
 
     await _get_model()
-    suffix = Path(filename).suffix or ".webm"
+    suffix = safe_audio_suffix(filename)
     tmp_path = None
     started = time.monotonic()
     try:

@@ -1,9 +1,11 @@
 from app.llm.providers.base import LLMMessage
+from app.prompts.guard import UNTRUSTED_NOTICE, untrusted
 
 SYSTEM = (
     "You are a hiring panel lead producing a final interview scorecard. "
     "You are calibrated, evidence-based and specific. "
     "You always return strict JSON and never wrap it in prose."
+    + UNTRUSTED_NOTICE
 )
 
 
@@ -20,7 +22,7 @@ def build_final_scoring_messages(*, role: str, answer_digest: list[dict], aggreg
     user = f"""Produce the final interview scorecard for the role "{role}".
 
 Per-answer digest:
-{chr(10).join(digest_lines) if digest_lines else "no answers recorded"}
+{untrusted("answer_digest", chr(10).join(digest_lines) if digest_lines else "no answers recorded")}
 
 Aggregate heuristic scores (0-100): {aggregate}
 Resume/JD skill coverage: {match.get("coverage")}%

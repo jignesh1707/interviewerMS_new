@@ -130,8 +130,10 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:5173`. The dev server proxies `/api` to `http://localhost:8080`, and allows
-`*.monkeycode-ai.live` hosts for remote previews.
+Open `http://localhost:5173` and paste your API key (kept in `sessionStorage` only). The dev server
+listens on loopback and proxies `/api` to `http://localhost:8080`. To expose it, set `VITE_HOST=0.0.0.0`
+and `VITE_ALLOWED_HOSTS=your.host`. For a local demo you can put `VITE_DEV_API_KEY=...` in
+`frontend/.env.local` (dev builds only).
 
 ## Configuration
 
@@ -159,7 +161,8 @@ All `/api/v1` routes except `/health` and `/ready` require the `X-API-Key` heade
 | Method | Path | Description |
 | --- | --- | --- |
 | GET | `/api/v1/health` | Liveness |
-| GET | `/api/v1/ready` | Readiness, provider and voice status |
+| GET | `/api/v1/ready` | Public readiness probe (`{"status": "ok"}`, 503 if storage is down) |
+| GET | `/api/v1/ready/details` | Provider and voice status (needs API key) |
 | GET | `/api/v1/models` | Router status: providers, tiers, task map, spend |
 | POST | `/api/v1/interviews` | Create an interview from JSON text |
 | POST | `/api/v1/interviews/upload` | Create an interview from multipart files |
