@@ -33,8 +33,10 @@ def admin_url():
 
 
 def _as_role(url: str, role: str) -> str:
+    """Swap the user in a connection URL, keeping host, port and query (TCP on Windows, a unix socket on Linux)."""
     parts = urlsplit(url)
-    return urlunsplit(parts._replace(netloc=f"{role}:pw@{parts.hostname}:{parts.port}"))
+    hostport = parts.netloc.rsplit("@", 1)[-1]
+    return urlunsplit(parts._replace(netloc=f"{role}:pw@{hostport}"))
 
 
 @pytest.fixture(scope="module")
@@ -307,3 +309,14 @@ def test_erase_by_external_ref_handles_more_than_one_batch(client, monkeypatch):
     ids = [_api_create(client, "many") for _ in range(5)]
     assert client.delete("/api/v1/interviews/by-ref/many", headers=HEADERS).json() == {"deleted": 5}
     assert all(client.get(f"/api/v1/interviews/{i}", headers=HEADERS).status_code == 404 for i in ids)
+
+
+@pytest.mark.parametrize(
+    "url, expected",
+    [
+        ("postgresql://postgres:@127.0.0.1:5432/postgres", "postgresql://r:pw@127.0.0.1:5432/postgres"),
+        ("postgresql://postgres:@/postgres?host=/tmp/pg", "postgresql://r:pw@/postgres?host=/tmp/pg"),
+    ],
+)
+def test_as_role_handles_tcp_and_unix_socket_urls(url, expected):
+    assert _as_role(url, "r") == expected
