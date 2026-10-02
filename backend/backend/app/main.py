@@ -5,7 +5,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api import routes_interviews, routes_speech, routes_system
+from app.api import routes_interviews, routes_quotas, routes_speech, routes_system
 from app.config import get_settings
 from app.core.errors import AppError
 from app.core.limits import BodyLimitMiddleware
@@ -73,6 +73,7 @@ async def unhandled_error_handler(request: Request, exc: Exception) -> JSONRespo
 
 app.include_router(routes_system.router, prefix="/api/v1")
 app.include_router(routes_interviews.router, prefix="/api/v1")
+app.include_router(routes_quotas.router, prefix="/api/v1")
 app.include_router(routes_speech.router, prefix="/api/v1")
 
 

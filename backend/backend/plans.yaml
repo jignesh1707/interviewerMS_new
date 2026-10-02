@@ -1,0 +1,28 @@
+# Plans, quotas and interview lengths. Only used when PLANS_ENABLED=true.
+#
+# One student's allowance is `included_minutes` per `period`. Booking an interview debits its full length,
+# so 150 minutes is 10 x 15, 8 x 20 or 6 x 25 minute interviews (any mix that adds up).
+#   period: monthly  -> the balance resets on the 1st (UTC); unused minutes do not roll over.
+#   period: none     -> a single balance for the student's lifetime (a one-time pack).
+# Top-ups bought outside this plan are added through POST /api/v1/quotas/{external_ref}/grant.
+#
+# `profiles` fixes what each interview length contains, so a short interview never asks a long one's questions.
+# Every length a plan allows must have a profile.
+#
+# `grace_seconds`: extra time after the length runs out before answers are refused (covers the last answer
+# being recorded). The student can always call finish afterwards to get the report.
+
+default_plan: standard
+grace_seconds: 60
+
+profiles:
+  15: {question_count: 7, max_followups: 2}
+  20: {question_count: 9, max_followups: 3}
+  25: {question_count: 12, max_followups: 3}
+
+plans:
+  standard:
+    included_minutes: 150
+    period: monthly
+    durations: [15, 20, 25]
+    default_duration: 15

@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     # Request size limits.
     max_doc_upload_mb: int = 5
     max_text_chars: int = 100_000
-    max_transcript_chars: int = 20_000
+    max_transcript_chars: int = 4_000  # one answer; about three minutes of speech
     max_metadata_bytes: int = 16_384
 
     storage_dir: Path = BASE_DIR / "data"
@@ -93,6 +93,13 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.4
 
     models_config_path: Path = BASE_DIR / "models.yaml"
+
+    # Plans, per-student quotas and interview length limits (see plans.yaml). Off by default: existing
+    # callers keep today's behaviour. When on, every interview needs an external_ref (the student id).
+    plans_enabled: bool = False
+    plans_config_path: Path = BASE_DIR / "plans.yaml"
+    # Per-answer caps, always applied.
+    max_answer_seconds: int = 180
 
     default_question_count: int = 8
     max_question_count: int = 15

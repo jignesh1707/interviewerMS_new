@@ -285,6 +285,51 @@ class Store:
             (interview_id, event_type, json.dumps(payload or {}), utc_now()),
         )
 
+    # ------------------------------------------------------------------ quotas
+
+    def _ensure_quota_row(self, tenant_id: str, external_ref: str, period: str) -> None:
+        self._execute(
+            "INSERT INTO quotas (tenant_id, external_ref, period_key, used_minutes, bonus_minutes, updated_at) "
+            "VALUES (?, ?, ?, 0, 0, ?) ON CONFLICT (tenant_id, external_ref, period_key) DO NOTHING",
+            (tenant_id, external_ref, period, utc_now()),
+        )
+
+    def quota_get(self, tenant_id: str, external_ref: str, period: str) -> dict[str, int]:
+        row = self._query_one(
+            "SELECT used_minutes, bonus_minutes FROM quotas WHERE tenant_id = ? AND external_ref = ? AND period_key = ?",
+            (tenant_id, external_ref, period),
+        )
+        return {"used_minutes": int(row["used_minutes"]), "bonus_minutes": int(row["bonus_minutes"])} if row else {
+            "used_minutes": 0,
+            "bonus_minutes": 0,
+        }
+
+    def quota_debit(self, tenant_id: str, external_ref: str, period: str, minutes: int, *, allowance: int) -> bool:
+        """Book `minutes` if the student still has them. One conditional UPDATE, so concurrent bookings cannot overspend."""
+        self._ensure_quota_row(tenant_id, external_ref, period)
+        changed = self.db.execute_count(
+            "UPDATE quotas SET used_minutes = used_minutes + ?, updated_at = ? "
+            "WHERE tenant_id = ? AND external_ref = ? AND period_key = ? "
+            "AND used_minutes + ? <= ? + bonus_minutes",
+            (minutes, utc_now(), tenant_id, external_ref, period, minutes, allowance),
+        )
+        return changed == 1
+
+    def quota_credit(self, tenant_id: str, external_ref: str, period: str, minutes: int) -> None:
+        self._execute(
+            "UPDATE quotas SET used_minutes = CASE WHEN used_minutes > ? THEN used_minutes - ? ELSE 0 END, "
+            "updated_at = ? WHERE tenant_id = ? AND external_ref = ? AND period_key = ?",
+            (minutes, minutes, utc_now(), tenant_id, external_ref, period),
+        )
+
+    def quota_add_bonus(self, tenant_id: str, external_ref: str, period: str, minutes: int) -> None:
+        self._ensure_quota_row(tenant_id, external_ref, period)
+        self._execute(
+            "UPDATE quotas SET bonus_minutes = bonus_minutes + ?, updated_at = ? "
+            "WHERE tenant_id = ? AND external_ref = ? AND period_key = ?",
+            (minutes, utc_now(), tenant_id, external_ref, period),
+        )
+
     def list_events(self, interview_id: str, limit: int = 100) -> list[dict[str, Any]]:
         rows = self._query_all(
             "SELECT * FROM events WHERE interview_id = ? ORDER BY id ASC LIMIT ?", (interview_id, limit)

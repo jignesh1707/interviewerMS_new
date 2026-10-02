@@ -45,6 +45,15 @@ class ConflictError(AppError):
     code = "conflict"
 
 
+class QuotaExceededError(AppError):
+    status_code = 402
+    code = "quota_exceeded"
+
+
+class TimeLimitError(ConflictError):
+    code = "time_limit_reached"
+
+
 class ProviderError(AppError):
     status_code = 502
     code = "provider_error"

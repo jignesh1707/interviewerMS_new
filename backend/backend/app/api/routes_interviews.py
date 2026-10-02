@@ -46,6 +46,7 @@ async def create_interview_with_files(
     callback_url: Annotated[str | None, Form()] = None,
     consent_to_ai_processing: Annotated[bool | None, Form()] = None,
     external_ref: Annotated[str | None, Form(max_length=200)] = None,
+    plan: Annotated[str | None, Form(max_length=64)] = None,
     config_json: Annotated[str | None, Form()] = None,
     metadata_json: Annotated[str | None, Form()] = None,
     resume_file: Annotated[UploadFile | None, File()] = None,
@@ -62,6 +63,7 @@ async def create_interview_with_files(
             callback_url=callback_url,
             consent_to_ai_processing=consent_to_ai_processing,
             external_ref=external_ref,
+            plan=plan,
             metadata=metadata or {},
             config=config or {},
         )
@@ -150,12 +152,14 @@ async def submit_audio_answer(
     audio: Annotated[UploadFile, File()],
     duration_seconds: Annotated[float | None, Form()] = None,
 ) -> AnswerResponse:
-    await get_async_store().get_interview_for_tenant(interview_id, tenant)
+    interview = await get_async_store().get_interview_for_tenant(interview_id, tenant)
+    service = get_interview_service()
+    service.ensure_time_remaining(interview)  # before any speech-to-text work is spent
     content = await read_capped(audio, get_settings().stt_max_upload_mb * 1024 * 1024, "audio")
     filename = audio.filename or "answer.webm"
     transcription = await stt.transcribe_bytes(content, filename)
+    service.enforce_answer_caps(transcript="", duration_seconds=transcription.get("duration_seconds"))
 
-    service = get_interview_service()
     audio_path = service.save_audio(interview_id, filename, content)
     duration = duration_seconds or transcription.get("duration_seconds")
     result = await service.submit_answer(

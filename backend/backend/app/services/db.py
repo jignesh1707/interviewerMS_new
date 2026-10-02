@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Protocol
 
-TABLES = ("interviews", "answers", "reports", "events")
+TABLES = ("interviews", "answers", "reports", "events", "quotas")
 _TABLE_RE = re.compile(r"\b(" + "|".join(TABLES) + r")\b")
 _IDENT_RE = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
 
@@ -75,6 +75,16 @@ CREATE TABLE IF NOT EXISTS events (
     event_type TEXT NOT NULL,
     payload TEXT,
     created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS quotas (
+    tenant_id TEXT NOT NULL,
+    external_ref TEXT NOT NULL,
+    period_key TEXT NOT NULL,
+    used_minutes INTEGER NOT NULL DEFAULT 0,
+    bonus_minutes INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, external_ref, period_key)
 );
 
 CREATE INDEX IF NOT EXISTS idx_answers_interview ON answers (interview_id, question_index);
@@ -137,6 +147,17 @@ CREATE TABLE IF NOT EXISTS events (
     created_at TEXT NOT NULL
 );
 
+-- Minutes a student has booked in a period (see plans.yaml). One row per tenant, student and period.
+CREATE TABLE IF NOT EXISTS quotas (
+    tenant_id TEXT NOT NULL,
+    external_ref TEXT NOT NULL,
+    period_key TEXT NOT NULL,
+    used_minutes INTEGER NOT NULL DEFAULT 0,
+    bonus_minutes INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, external_ref, period_key)
+);
+
 CREATE INDEX IF NOT EXISTS idx_answers_interview ON answers (interview_id, question_index);
 CREATE INDEX IF NOT EXISTS idx_answers_question ON answers (interview_id, question_id);
 CREATE INDEX IF NOT EXISTS idx_events_interview ON events (interview_id, id);
@@ -148,6 +169,7 @@ ALTER TABLE interviews ENABLE ROW LEVEL SECURITY;
 ALTER TABLE answers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE reports ENABLE ROW LEVEL SECURITY;
 ALTER TABLE events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE quotas ENABLE ROW LEVEL SECURITY;
 """
 
 
@@ -161,6 +183,7 @@ class Database(Protocol):
 
     def ensure_schema(self) -> None: ...
     def execute(self, sql: str, params: tuple = ()) -> None: ...
+    def execute_count(self, sql: str, params: tuple = ()) -> int: ...
     def query_one(self, sql: str, params: tuple = ()) -> dict[str, Any] | None: ...
     def query_all(self, sql: str, params: tuple = ()) -> list[dict[str, Any]]: ...
     def transaction(self) -> Any: ...
@@ -196,6 +219,13 @@ class SqliteDatabase:
         with self._lock:
             self._connection.execute(sql, params)
             self._connection.commit()
+
+    def execute_count(self, sql: str, params: tuple = ()) -> int:
+        """Run a write and return how many rows it changed (used for conditional updates)."""
+        with self._lock:
+            changed = self._connection.execute(sql, params).rowcount
+            self._connection.commit()
+        return changed
 
     def query_one(self, sql: str, params: tuple = ()) -> dict[str, Any] | None:
         with self._lock:
@@ -274,6 +304,10 @@ class PostgresDatabase:
     def execute(self, sql: str, params: tuple = ()) -> None:
         with self._pool.connection() as conn:
             conn.execute(self._qualify(sql), params)
+
+    def execute_count(self, sql: str, params: tuple = ()) -> int:
+        with self._pool.connection() as conn:
+            return conn.execute(self._qualify(sql), params).rowcount
 
     def query_one(self, sql: str, params: tuple = ()) -> dict[str, Any] | None:
         with self._pool.connection() as conn:

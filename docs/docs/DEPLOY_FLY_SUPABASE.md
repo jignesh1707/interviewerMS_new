@@ -62,6 +62,10 @@ fly secrets set \
   DEEPSEEK_API_KEY='...' OPENROUTER_API_KEY='...'
 ```
 
+To sell fixed interview packs, also set `PLANS_ENABLED=true` and edit `backend/plans.yaml` (allowed lengths, minutes
+per student, question counts). Student minutes live in the `quotas` table in the same Postgres schema, which the
+service creates on start. See section 4b of `INTEGRATION.md`.
+
 Settings to know about:
 
 - **No public address.** Call the service from the main app over Fly's private network. Do not add a public
