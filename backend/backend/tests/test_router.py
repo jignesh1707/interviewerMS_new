@@ -190,7 +190,7 @@ def test_priority_overrides_yaml_order():
     assert [candidate.provider for candidate in config.candidates("cheap")] == ["deepseek", "anthropic", "openai"]
 
 
-def test_production_models_yaml_uses_openai_then_deepseek_then_anthropic():
+def test_production_models_yaml_uses_deepseek_then_openrouter_then_openai_then_anthropic():
     from pathlib import Path
 
     from app.llm.router import load_router_config
@@ -198,7 +198,8 @@ def test_production_models_yaml_uses_openai_then_deepseek_then_anthropic():
     config = load_router_config(Path(__file__).resolve().parents[1] / "models.yaml")
     for tier in ("cheap", "standard", "premium"):
         assert [candidate.provider for candidate in config.candidates(tier)] == [
-            "openai",
             "deepseek",
+            "openrouter",
+            "openai",
             "anthropic",
         ]

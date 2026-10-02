@@ -89,6 +89,7 @@ def configure_logging() -> None:
             settings.openai_api_key,
             settings.deepseek_api_key,
             settings.anthropic_api_key,
+            settings.openrouter_api_key,
             settings.webhook_secret,
             *settings.api_key_set,
         )
