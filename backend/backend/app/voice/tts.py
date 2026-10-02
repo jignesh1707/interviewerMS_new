@@ -59,6 +59,10 @@ async def synthesize(text: str, voice: str | None = None) -> bytes:
     trimmed = text.strip()[:3000]
     model_path = settings.piper_model_path
     resolved_voice = voice or settings.piper_default_voice
+    if resolved_voice not in settings.piper_voice_set:
+        raise ValidationAppError(
+            "voice is not allowed", details={"allowed": sorted(settings.piper_voice_set)}
+        )
     if not model_path:
         logger.warning("piper_model_path_not_set using voice_id=%s", resolved_voice)
     return await asyncio.to_thread(_synthesize_sync, trimmed, model_path, resolved_voice)

@@ -18,4 +18,4 @@ trap cleanup EXIT
 
 echo "Starting frontend on port 5173..."
 cd "$ROOT/frontend"
-npm run dev -- --host 0.0.0.0 --port 5173
+npm run dev -- --host "${VITE_HOST:-127.0.0.1}" --port 5173

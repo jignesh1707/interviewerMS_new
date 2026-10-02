@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import get_settings
-from app.core.errors import AllProvidersFailedError, ValidationAppError
+from app.core.errors import AllProvidersFailedError, ConflictError, ValidationAppError
 from app.core.logging import get_logger
 from app.core.url_safety import validate_callback_url
 from app.llm.providers.base import LLMMessage
@@ -15,6 +15,7 @@ from app.llm.router import ModelRouter, get_router
 from app.llm.safety import redact_secrets
 from app.llm.tasks import LLMTask
 from app.prompts.guard import clamp_scores, detect_injection
+from app.voice.audio import safe_audio_suffix
 from app.prompts.analysis import build_answer_analysis_messages, build_coaching_messages
 from app.prompts.questions import build_followup_messages, build_question_generation_messages, build_resume_summary_messages
 from app.prompts.report import (
@@ -224,8 +225,14 @@ class InterviewService:
             raise ValidationAppError("interview has no questions yet")
         if not transcript.strip():
             raise ValidationAppError("transcript is empty; no speech detected")
+        if interview.get("status") == "completed":
+            raise ConflictError("interview is already completed; no more answers can be submitted")
 
         resolved_index, target = self._resolve_question(questions, question_id, question_index)
+        if any(item.get("question_id") == target["id"] for item in self.store.list_answers(interview_id)):
+            raise ConflictError(
+                "this question has already been answered", details={"question_id": target["id"]}
+            )
         question_text = target["question"]
         metrics = analyze_transcript(transcript, duration_seconds)
         heuristics = heuristic_score(metrics)
@@ -430,6 +437,10 @@ class InterviewService:
 
     async def finish_interview(self, interview_id: str, *, callback_url: str | None = None) -> dict[str, Any]:
         interview = self.store.get_interview(interview_id)
+        if interview.get("status") == "completed":
+            saved = self.store.get_report(interview_id)
+            if saved:  # idempotent: do not pay for a second scoring run
+                return saved["payload"]
         answers = self.store.list_answers(interview_id)
         if not answers:
             raise ValidationAppError("cannot finish an interview with no recorded answers")
@@ -629,9 +640,7 @@ class InterviewService:
         """Persist uploaded audio only when RETAIN_AUDIO is on; by default only the transcript is kept."""
         if not self.settings.retain_audio:
             return None
-        suffix = Path(filename).suffix.lower()
-        if suffix not in {".webm", ".wav", ".mp3", ".m4a", ".ogg", ".opus", ".flac", ".mp4"}:
-            suffix = ".webm"
+        suffix = safe_audio_suffix(filename)
         directory = self.settings.storage_dir / "audio" / interview_id
         directory.mkdir(parents=True, exist_ok=True)
         _restrict(directory, 0o700)

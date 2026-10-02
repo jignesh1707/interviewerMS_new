@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import json
 import time
+import uuid
 from typing import Any
 
 import httpx
@@ -37,9 +38,25 @@ async def deliver(url: str | None, event: str, data: dict[str, Any]) -> dict[str
         "data": data,
     }
     payload_bytes = json.dumps(body, separators=(",", ":"), default=str).encode("utf-8")
-    headers = {"Content-Type": "application/json", "X-Interview-Event": event}
+    if not settings.webhook_secret:
+        if not settings.is_development:
+            logger.error("webhook_blocked event=%s reason=no_webhook_secret", event)
+            return {"delivered": False, "reason": "WEBHOOK_SECRET is not configured", "attempts": 0}
+        logger.warning("webhook_unsigned event=%s (development only)", event)
+    timestamp = str(int(body["sent_at"]))
+    headers = {
+        "Content-Type": "application/json",
+        "X-Interview-Event": event,
+        "X-Interview-Delivery": uuid.uuid4().hex,
+        "X-Interview-Timestamp": timestamp,
+    }
     if settings.webhook_secret:
+        # v1 signs the body only (kept for existing receivers); v2 also binds the timestamp so a
+        # captured request cannot be replayed after the receiver's freshness window.
         headers["X-Interview-Signature"] = _sign(payload_bytes, settings.webhook_secret)
+        headers["X-Interview-Signature-V2"] = _sign(
+            timestamp.encode("ascii") + b"." + payload_bytes, settings.webhook_secret
+        )
 
     last_error = ""
     async with httpx.AsyncClient(timeout=settings.webhook_timeout_seconds, follow_redirects=False) as client:

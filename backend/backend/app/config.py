@@ -94,6 +94,7 @@ class Settings(BaseSettings):
     piper_binary: str = "piper"
     piper_model_path: str = ""
     piper_default_voice: str = "en_US-lessac-medium"
+    piper_allowed_voices: str = ""  # extra voice names callers may request, comma separated
 
     @property
     def is_development(self) -> bool:
@@ -127,6 +128,11 @@ class Settings(BaseSettings):
     @property
     def disabled_provider_set(self) -> set[str]:
         return {p.strip().lower() for p in self.llm_disabled_providers.split(",") if p.strip()}
+
+    @property
+    def piper_voice_set(self) -> set[str]:
+        extra = {v.strip() for v in self.piper_allowed_voices.split(",") if v.strip()}
+        return {self.piper_default_voice} | extra
 
     @property
     def callback_host_set(self) -> set[str]:

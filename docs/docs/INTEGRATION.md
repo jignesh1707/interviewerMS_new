@@ -129,16 +129,25 @@ Payload:
 Headers:
 
 - `X-Interview-Event`
-- `X-Interview-Signature` — HMAC-SHA256 of the raw request body using `WEBHOOK_SECRET`
+- `X-Interview-Delivery` — unique id per delivery, use it to deduplicate retries
+- `X-Interview-Timestamp` — unix seconds when the request was sent
+- `X-Interview-Signature-V2` — HMAC-SHA256 of `<timestamp>.<raw body>` using `WEBHOOK_SECRET`. Verify this one and reject timestamps older than ~5 minutes to block replays.
+- `X-Interview-Signature` — legacy HMAC-SHA256 of the raw body only (no replay protection)
+
+Outside `ENVIRONMENT=development` the service will not send unsigned webhooks: set `WEBHOOK_SECRET`.
 
 Python verification:
 
 ```python
 import hashlib, hmac
 
-def verify(raw_body: bytes, signature: str, secret: str) -> bool:
-    expected = hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, signature)
+import time
+
+def verify(raw_body: bytes, timestamp: str, signature_v2: str, secret: str, tolerance: int = 300) -> bool:
+    if abs(time.time() - int(timestamp)) > tolerance:
+        return False
+    expected = hmac.new(secret.encode(), timestamp.encode() + b"." + raw_body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature_v2)
 ```
 
 Node verification:
@@ -146,13 +155,15 @@ Node verification:
 ```javascript
 const crypto = require('crypto')
 
-function verify(rawBody, signature, secret) {
-  const expected = crypto.createHmac('sha256', secret).update(rawBody).digest('hex')
-  return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature))
+function verify(rawBody, timestamp, signatureV2, secret, toleranceSeconds = 300) {
+  if (Math.abs(Date.now() / 1000 - Number(timestamp)) > toleranceSeconds) return false
+  const expected = crypto.createHmac('sha256', secret).update(`${timestamp}.`).update(rawBody).digest('hex')
+  const a = Buffer.from(expected), b = Buffer.from(signatureV2)
+  return a.length === b.length && crypto.timingSafeEqual(a, b)
 }
 ```
 
-Unset `WEBHOOK_SECRET` to skip signing (not recommended for production).
+In development only, an unset `WEBHOOK_SECRET` sends unsigned webhooks.
 
 ## 6. Polling alternative
 
@@ -168,11 +179,10 @@ The demo frontend is a plain Vite app. To embed it:
 
 1. Build it with `npm run build` in `frontend`.
 2. Serve `frontend/dist` from the main app and proxy `/api` to this service.
-3. Pass the API key into the UI (the demo stores it in `localStorage`; for production inject it from
-   your authenticated session instead of asking the user).
+3. Do not ship the service API key to browsers. The demo keeps a pasted key in `sessionStorage`; in
+   production have your backend call this service, or proxy `/api` and attach the key server-side.
 
-The dev server already allows `*.monkeycode-ai.live` hosts and proxies `/api`, so it works behind the
-platform preview.
+The dev server listens on loopback and proxies `/api`. Set `VITE_HOST` and `VITE_ALLOWED_HOSTS` to expose it.
 
 ## 8. Operational notes
 
