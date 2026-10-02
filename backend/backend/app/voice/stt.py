@@ -12,6 +12,7 @@ logger = get_logger(__name__)
 
 _model = None
 _model_lock = asyncio.Lock()
+_preload_pending = False
 _slots: asyncio.Semaphore | None = None
 _slots_size = 0
 
@@ -56,12 +57,32 @@ def _slot_semaphore() -> asyncio.Semaphore:
     return _slots
 
 
+def begin_preload() -> "asyncio.Task":
+    """Start loading the model in the background. Until it finishes, ``preload_pending`` is true.
+
+    Startup does not wait for it (a cold disk can take a minute); /ready reports not ready meanwhile, so the load
+    balancer sends no traffic to a machine whose first answer would stall.
+    """
+    global _preload_pending
+    _preload_pending = True
+    return asyncio.create_task(preload())
+
+
 async def preload() -> None:
-    """Load the model at startup. Voice is optional in development, so a missing install is only logged."""
+    """Load the model. Voice is optional in development, so a missing install is only logged."""
+    global _preload_pending
     try:
         await _get_model()
     except SpeechUnavailableError as exc:
         logger.warning("stt_preload_skipped reason=%s", exc.message)
+    except Exception:  # noqa: BLE001
+        logger.exception("stt_preload_failed")  # the first answer will surface the real error
+    finally:
+        _preload_pending = False
+
+
+def preload_pending() -> bool:
+    return _preload_pending
 
 
 def _transcribe_sync(audio_path: str) -> dict:

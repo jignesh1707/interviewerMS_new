@@ -136,3 +136,32 @@ async def test_preload_skips_quietly_when_voice_is_not_installed(monkeypatch):
 
     monkeypatch.setattr(stt, "_get_model", missing)
     await stt.preload()  # must not raise
+
+
+async def test_startup_does_not_wait_for_the_model_but_ready_does(client, monkeypatch):
+    release = asyncio.Event()
+
+    async def slow_model():
+        await release.wait()
+
+    monkeypatch.setattr(stt, "_get_model", slow_model)
+    task = stt.begin_preload()
+    await asyncio.sleep(0)
+    assert stt.preload_pending() is True
+    assert client.get("/api/v1/health").status_code == 200  # alive straight away
+    not_ready = client.get("/api/v1/ready")
+    assert not_ready.status_code == 503 and "loading" in not_ready.json()["error"]["message"]
+
+    release.set()
+    await task
+    assert stt.preload_pending() is False
+    assert client.get("/api/v1/ready").status_code == 200
+
+
+async def test_preload_failure_does_not_leave_the_service_unready(monkeypatch):
+    async def broken():
+        raise RuntimeError("corrupt model file")
+
+    monkeypatch.setattr(stt, "_get_model", broken)
+    await stt.begin_preload()
+    assert stt.preload_pending() is False

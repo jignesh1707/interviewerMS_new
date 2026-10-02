@@ -1,5 +1,7 @@
 # Deploying on Fly.io with Supabase Postgres and Upstash Redis
 
+For the order of work on a first (staging) deploy, with checks at each step, see [STAGING.md](STAGING.md).
+
 This service is stateless once `DATABASE_URL` and `REDIS_URL` are set, so you can run several machines behind
 Fly's load balancer. Nothing is stored on the machine's disk (audio is discarded unless `RETAIN_AUDIO=true`).
 

@@ -14,6 +14,14 @@ primary_region = "iad"
   HOST = "::"                # listen on IPv6 so Fly's private network (.internal / .flycast) can reach it
   PLANS_ENABLED = "true"
   REQUIRE_CONSENT = "true"
+  FINISH_ASYNC = "true"       # POST /finish answers 202; the report is built in the background
+  # Limits are per TENANT, and the whole main app is one tenant, so the defaults (20 AI-backed calls a minute, 2000 a
+  # day) would cap the platform at about one interview a minute. One interview is roughly 10 to 20 such calls. These
+  # are starting values for staging; size them from the load test. Per-student limits (30/min, 200/day) stay as the
+  # abuse control. The daily budget is also a cost ceiling, so set it deliberately.
+  RATE_LIMIT_PER_MINUTE = "1200"
+  RATE_LIMIT_EXPENSIVE_PER_MINUTE = "300"
+  DAILY_EXPENSIVE_BUDGET = "20000"
 
 # Private service: no [http_service], and deploy with `fly deploy --no-public-ips`, so nothing is reachable from the
 # internet. The main app calls it over Fly's private network (http://interviewer-ms.internal:8080, or .flycast after
@@ -47,7 +55,7 @@ primary_region = "iad"
     path = "/api/v1/ready"
     interval = "30s"
     timeout = "5s"
-    grace_period = "30s"
+    grace_period = "60s"   # Fly caps this at 60 s. The speech model loads in the background; /ready is 503 until then
 
 # Whisper base (int8) plus the API need ~1 GB under load; 2 GB leaves headroom for concurrent transcriptions.
 [[vm]]
