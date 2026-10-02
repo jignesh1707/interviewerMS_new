@@ -125,3 +125,4 @@ class ReportResponse(BaseModel):
     status: str
     report: dict[str, Any] | None = None
     created_at: str | None = None
+    error: str | None = None  # why the report could not be built, when status is "failed"

@@ -431,7 +431,7 @@ async def test_deterministic_scoring_continues_without_llm(tmp_path):
     assert answered["heuristic_scores"]["overall"] > 0
     assert answered["analysis"] is None
 
-    report = await service.finish_interview(interview_id)
+    _, report = await service.request_finish(interview_id, wait=True)
     assert report["overall_score"] is not None
     assert report["readiness_level"] in {"not_ready", "needs_practice", "almost_ready", "interview_ready"}
     assert "Heuristic" in (report["summary"] or "")

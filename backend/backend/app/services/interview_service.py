@@ -61,6 +61,7 @@ class InterviewService:
         self.router = router or get_router()
         self.settings = get_settings()
         self.packs = PackService(self.store)
+        self._build_tasks: set[asyncio.Task] = set()
 
     async def create_interview(
         self,
@@ -206,10 +207,11 @@ class InterviewService:
 
         from app.services import webhook
 
-        webhook.fire_and_forget(
+        await webhook.enqueue(
             interview.get("callback_url"),
             "interview.created",
             {"interview_id": interview_id, "status": "questions_ready", "question_count": len(questions)},
+            interview_id,
         )
         return {"interview": interview, "questions": questions, "match": match}
 
@@ -541,19 +543,81 @@ class InterviewService:
                 return item
         return None
 
-    async def finish_interview(self, interview_id: str, *, callback_url: str | None = None) -> dict[str, Any]:
+    async def request_finish(
+        self, interview_id: str, *, callback_url: str | None = None, wait: bool | None = None
+    ) -> tuple[str, dict[str, Any] | None]:
+        """Start (or join) report generation. Returns ("completed", report) or ("processing", None).
+
+        With ``finish_async`` (and ``wait`` not forced) the report is built in the background and the caller gets
+        "processing" straight away; otherwise this waits for it. Either way only one build runs per interview, however many finish calls
+        arrive and on whichever machine: the status change to 'processing' is a single conditional UPDATE.
+        """
         interview = await self.store.get_interview(interview_id)
         if interview.get("status") == "completed":
             saved = await self.store.get_report(interview_id)
             if saved:  # idempotent: do not pay for a second scoring run
-                return saved["payload"]
+                return "completed", saved["payload"]
+            await self.store.update_interview(interview_id, status="failed")  # completed without a report: redo it
         answers = await self.store.list_answers(interview_id)
         if not answers:
             raise ValidationAppError("cannot finish an interview with no recorded answers")
 
-        await self.store.update_interview(interview_id, status="processing")
+        if not await self.store.claim_finish(interview_id):
+            return "processing", None  # another call or machine is already building it
         await self.store.add_event(interview_id, "interview.processing", {"answers": len(answers)})
 
+        if wait is None:
+            wait = not self.settings.finish_async
+        if not wait:
+            self._spawn_build(interview_id, callback_url)
+            return "processing", None
+        return "completed", await self._run_build(interview_id, callback_url)
+
+    def _spawn_build(self, interview_id: str, callback_url: str | None = None) -> None:
+        task = asyncio.create_task(self._run_build(interview_id, callback_url, background=True))
+        self._build_tasks.add(task)
+        task.add_done_callback(self._build_tasks.discard)
+
+    async def _run_build(
+        self, interview_id: str, callback_url: str | None = None, *, background: bool = False
+    ) -> dict[str, Any] | None:
+        try:
+            return await self._build_report(interview_id, callback_url)
+        except asyncio.CancelledError:
+            raise  # shutting down: leave it 'processing' so the sweeper on another machine finishes it
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("report_build_failed id=%s", interview_id)
+            message = redact_secrets(str(exc))[:300] or exc.__class__.__name__
+            await self.store.update_interview(interview_id, status="failed", error=message)
+            await self.store.add_event(interview_id, "interview.failed", {"error": message})
+            interview = await self.store.get_interview(interview_id)
+            from app.services import webhook
+
+            await webhook.enqueue(
+                callback_url or interview.get("callback_url"),
+                "interview.failed",
+                {"interview_id": interview_id, "status": "failed", "error": message},
+                interview_id,
+            )
+            if background:
+                return None
+            raise
+
+    async def sweep_stalled_builds(self) -> int:
+        """Finish reports whose machine went away mid-build (deploy, crash). Safe to run on every machine."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=self.settings.finish_stale_seconds)).isoformat()
+        taken = 0
+        for interview_id in await self.store.list_stale_processing_ids(cutoff):
+            if await self.store.claim_stale_finish(interview_id, cutoff):
+                logger.warning("report_build_resumed id=%s", interview_id)
+                await self.store.add_event(interview_id, "interview.resumed", {})
+                self._spawn_build(interview_id)
+                taken += 1
+        return taken
+
+    async def _build_report(self, interview_id: str, callback_url: str | None = None) -> dict[str, Any]:
+        interview = await self.store.get_interview(interview_id)
+        answers = await self.store.list_answers(interview_id)
         questions = interview.get("questions") or []
         index_by_id = {item.get("id"): position for position, item in enumerate(questions)}
 
@@ -672,8 +736,8 @@ class InterviewService:
         from app.services import webhook
 
         target = callback_url or interview.get("callback_url")
-        # Do not make the student wait on the receiver (deliver retries with sleeps and 10 s timeouts).
-        webhook.fire_and_forget(
+        # Stored first, sent by the outbox loop with retries: the student never waits on the receiver.
+        await webhook.enqueue(
             target,
             "interview.completed",
             {
@@ -682,6 +746,7 @@ class InterviewService:
                 "overall_score": report["overall_score"],
                 "readiness_level": report["readiness_level"],
             },
+            interview_id,
         )
         return report
 

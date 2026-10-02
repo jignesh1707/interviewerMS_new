@@ -167,15 +167,6 @@ async def test_unsigned_webhook_allowed_in_development(real_webhook, monkeypatch
     assert "X-Interview-Signature-V2" not in _FakeClient.posts[0]["headers"]
 
 
-async def test_fire_and_forget_keeps_task_reference(real_webhook, monkeypatch):
-    monkeypatch.setattr(get_settings(), "webhook_secret", SECRET)
-    real_webhook.fire_and_forget(PUBLIC_URL, "interview.created", {})
-    assert len(real_webhook._background) == 1
-    await asyncio.gather(*list(real_webhook._background))
-    await asyncio.sleep(0)
-    assert len(real_webhook._background) == 0
-
-
 # ---- speech inputs ------------------------------------------------------------------------
 
 

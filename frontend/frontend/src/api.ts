@@ -113,11 +113,30 @@ export function finishInterview(apiKey: string, interviewId: string) {
   )
 }
 
+export type ReportResult = { interview_id: string; status: string; report: any; error?: string | null }
+
 export function getReport(apiKey: string, interviewId: string) {
-  return request<{ interview_id: string; status: string; report: any }>(
-    `/interviews/${interviewId}/report`,
-    apiKey,
-  )
+  return request<ReportResult>(`/interviews/${interviewId}/report`, apiKey)
+}
+
+/**
+ * The service may answer finish with 202 (report still being built) instead of the report itself. Poll until it is
+ * completed or failed. A production client should also listen for the interview.completed webhook on its backend.
+ */
+export async function waitForReport(
+  first: ReportResult,
+  fetchReport: () => Promise<ReportResult>,
+  { intervalMs = 2500, timeoutMs = 300_000, sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms)) } = {},
+): Promise<ReportResult> {
+  let current = first
+  const deadline = Date.now() + timeoutMs
+  while (current.report == null) {
+    if (current.status === 'failed') throw new Error(current.error || 'The report could not be generated.')
+    if (Date.now() >= deadline) throw new Error('The report is taking longer than expected. Try again shortly.')
+    await sleep(intervalMs)
+    current = await fetchReport()
+  }
+  return current
 }
 
 export function getModels(apiKey: string) {

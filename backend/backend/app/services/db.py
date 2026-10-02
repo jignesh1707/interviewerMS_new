@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Protocol
 
-TABLES = ("interviews", "answers", "reports", "events", "packs", "pack_payments")
+TABLES = ("interviews", "answers", "reports", "events", "packs", "pack_payments", "webhook_outbox")
 _TABLE_RE = re.compile(r"\b(" + "|".join(TABLES) + r")\b")
 _IDENT_RE = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
 
@@ -102,11 +102,28 @@ CREATE TABLE IF NOT EXISTS pack_payments (
     PRIMARY KEY (tenant_id, payment_id)
 );
 
+CREATE TABLE IF NOT EXISTS webhook_outbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    interview_id TEXT,
+    url TEXT NOT NULL,
+    event TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT NOT NULL,
+    locked_until TEXT,
+    last_error TEXT,
+    created_at TEXT NOT NULL,
+    delivered_at TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_answers_interview ON answers (interview_id, question_index);
 CREATE INDEX IF NOT EXISTS idx_answers_question ON answers (interview_id, question_id);
 CREATE INDEX IF NOT EXISTS idx_events_interview ON events (interview_id, id);
 CREATE INDEX IF NOT EXISTS idx_interviews_tenant ON interviews (tenant_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_interviews_external_ref ON interviews (tenant_id, external_ref);
+CREATE INDEX IF NOT EXISTS idx_outbox_due ON webhook_outbox (status, next_attempt_at);
+CREATE INDEX IF NOT EXISTS idx_outbox_interview ON webhook_outbox (interview_id);
 """
 
 POSTGRES_SCHEMA = """
@@ -188,17 +205,35 @@ CREATE TABLE IF NOT EXISTS pack_payments (
     PRIMARY KEY (tenant_id, payment_id)
 );
 
+CREATE TABLE IF NOT EXISTS webhook_outbox (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    interview_id TEXT,
+    url TEXT NOT NULL,
+    event TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT NOT NULL,
+    locked_until TEXT,
+    last_error TEXT,
+    created_at TEXT NOT NULL,
+    delivered_at TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_answers_interview ON answers (interview_id, question_index);
 CREATE INDEX IF NOT EXISTS idx_answers_question ON answers (interview_id, question_id);
 CREATE INDEX IF NOT EXISTS idx_events_interview ON events (interview_id, id);
 CREATE INDEX IF NOT EXISTS idx_interviews_tenant ON interviews (tenant_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_interviews_external_ref ON interviews (tenant_id, external_ref);
+CREATE INDEX IF NOT EXISTS idx_outbox_due ON webhook_outbox (status, next_attempt_at);
+CREATE INDEX IF NOT EXISTS idx_outbox_interview ON webhook_outbox (interview_id);
 
 -- Candidate data must never be reachable through Supabase's REST API.
 ALTER TABLE interviews ENABLE ROW LEVEL SECURITY;
 ALTER TABLE answers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE reports ENABLE ROW LEVEL SECURITY;
 ALTER TABLE events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE webhook_outbox ENABLE ROW LEVEL SECURITY;
 ALTER TABLE packs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE pack_payments ENABLE ROW LEVEL SECURITY;
 """

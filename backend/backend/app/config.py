@@ -115,6 +115,18 @@ class Settings(BaseSettings):
     webhook_secret: str = ""
     webhook_timeout_seconds: float = 10.0
     webhook_max_attempts: int = 3
+    # Outbox: webhooks are stored and retried with backoff (30 s, 2 min, 10 min, 1 h, 6 h, 12 h) until delivered.
+    webhook_outbox_worker: bool = True
+    webhook_outbox_poll_seconds: int = 5
+    webhook_outbox_max_attempts: int = 8
+    webhook_outbox_keep_days: int = 7  # delivered and dead rows are pruned after this
+
+    # Report generation. When true, POST /finish answers 202 at once and the report is built in the background;
+    # the caller polls GET .../report or waits for the interview.completed webhook. When false it answers 200
+    # with the report after generating it (10 to 30 s).
+    finish_async: bool = False
+    finish_stale_seconds: int = 300  # a build with no progress for this long is taken over by the sweeper
+    finish_sweep_seconds: int = 60
 
     whisper_model: str = "base"
     whisper_device: str = "cpu"
