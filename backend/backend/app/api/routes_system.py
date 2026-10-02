@@ -26,6 +26,8 @@ async def ready() -> dict:
     except Exception:  # noqa: BLE001
         logger.exception("readiness_check_failed")
         raise ServiceUnavailableError("storage unavailable") from None
+    if stt.preload_pending():
+        raise ServiceUnavailableError("speech model is still loading")
     return {"status": "ok"}
 
 

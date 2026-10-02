@@ -24,11 +24,11 @@ async def lifespan(_: FastAPI):
         from app.llm.router import load_router_config
 
         validate_against_router(get_plans(), load_router_config(settings.models_config_path))
+    tasks = [asyncio.create_task(_build_sweep_loop())]
     if settings.stt_preload:
         from app.voice import stt
 
-        await stt.preload()
-    tasks = [asyncio.create_task(_build_sweep_loop())]
+        tasks.append(stt.begin_preload())
     if settings.retention_days > 0:
         tasks.append(asyncio.create_task(_retention_loop()))
     if settings.webhook_outbox_worker:
