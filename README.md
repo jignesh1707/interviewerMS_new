@@ -254,7 +254,7 @@ To keep running costs low:
 - Resume and JD parsing, metrics and heuristic scoring are pure Python.
 - Cheap-tier models handle short follow-ups, tagging and coaching hints.
 - Fallback order is DeepSeek, then OpenRouter, then OpenAI, then Anthropic, so a later candidate is only used when earlier ones fail or are unconfigured.
-- Premium models are used only for final scoring and the recruiter narrative.
+- Premium models (DeepSeek V4 Pro by default) are used only for final scoring and the recruiter narrative.
 - Per-answer LLM analysis can be disabled with `config.analyze_per_answer = false`, which leaves
   Python heuristics in place.
 - If providers fail, the report falls back to a fully deterministic scorecard rather than retrying

@@ -5,8 +5,12 @@
 # Set `priority` on a candidate to override YAML order (lower is tried first).
 #
 # A provider with no API key in .env is skipped automatically, so the OpenAI and Anthropic entries
-# cost nothing until you add keys. To use the stronger DeepSeek V4 Pro for the premium tier, change the
-# deepseek model to `deepseek-v4-pro` and the openrouter model to `deepseek/deepseek-v4-pro-0813`.
+# cost nothing until you add keys.
+#
+# Jobs are matched to a tier by the `tasks` map at the bottom:
+#   cheap    -> short, high-volume work (DeepSeek V4.1 Flash)
+#   standard -> core structured generation and per-answer analysis (DeepSeek V4.1 Flash)
+#   premium  -> final scoring and the recruiter narrative (DeepSeek V4 Pro, the stronger model)
 # Keep prices current: they drive the cost estimate in /api/v1/models.
 
 tiers:
@@ -59,14 +63,14 @@ tiers:
   # High-stakes reasoning: final scoring and recruiter narrative.
   premium:
     - provider: deepseek
-      model: deepseek-flash
-      input_price: 0.30
-      output_price: 1.20
+      model: deepseek-v4-pro
+      input_price: 1.32
+      output_price: 3.96
       priority: 0
     - provider: openrouter
-      model: deepseek/deepseek-v4.1-flash
-      input_price: 0.30
-      output_price: 1.20
+      model: deepseek/deepseek-v4-pro-0813
+      input_price: 0.66
+      output_price: 1.98
       priority: 1
     - provider: openai
       model: gpt-4o

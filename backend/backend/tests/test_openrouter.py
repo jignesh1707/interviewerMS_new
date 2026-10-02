@@ -30,12 +30,36 @@ def _router(**overrides):
     return ModelRouter(settings=settings, config=load_router_config(MODELS_YAML))
 
 
-def test_yaml_pins_deepseek_flash_then_openrouter_flash():
+def test_yaml_keeps_cheap_standard_on_flash_and_premium_on_pro():
     config = load_router_config(MODELS_YAML)
-    for tier in ("cheap", "standard", "premium"):
+    expected = {
+        "cheap": ("deepseek-flash", "deepseek/deepseek-v4.1-flash"),
+        "standard": ("deepseek-flash", "deepseek/deepseek-v4.1-flash"),
+        "premium": ("deepseek-v4-pro", "deepseek/deepseek-v4-pro-0813"),
+    }
+    for tier, (direct, via_openrouter) in expected.items():
         first, second = config.candidates(tier)[:2]
-        assert (first.provider, first.model) == ("deepseek", "deepseek-flash")
-        assert (second.provider, second.model) == ("openrouter", "deepseek/deepseek-v4.1-flash")
+        assert (first.provider, first.model) == ("deepseek", direct)
+        assert (second.provider, second.model) == ("openrouter", via_openrouter)
+
+
+def test_each_task_resolves_to_the_intended_tier_and_model():
+    config = load_router_config(MODELS_YAML)
+    expected = {
+        "resume_summary": ("cheap", "deepseek-flash"),
+        "jd_metadata": ("cheap", "deepseek-flash"),
+        "followup_generation": ("cheap", "deepseek-flash"),
+        "answer_coaching": ("cheap", "deepseek-flash"),
+        "question_generation": ("standard", "deepseek-flash"),
+        "tips_generation": ("standard", "deepseek-flash"),
+        "answer_analysis": ("standard", "deepseek-flash"),
+        "final_scoring": ("premium", "deepseek-v4-pro"),
+        "report_narrative": ("premium", "deepseek-v4-pro"),
+    }
+    assert set(config.tasks) == set(expected)
+    for task, (tier, model) in expected.items():
+        assert config.tier_for_task(task) == tier
+        assert config.candidates(tier)[0].model == model
 
 
 def test_openrouter_endpoint_is_allowlisted_per_provider():
