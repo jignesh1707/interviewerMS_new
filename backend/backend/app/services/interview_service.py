@@ -606,38 +606,36 @@ class InterviewService:
         if not scorecard:
             scorecard = self._fallback_scorecard(per_answer, aggregate, match)
 
-        tips = None
-        tips_payload, routing = await self._try_llm_json(
-            LLMTask.TIPS_GENERATION,
-            build_tips_messages(
-                role=interview["role"],
-                dimension_scores=scorecard.get("dimension_scores", {}),
-                critical_gaps=scorecard.get("critical_gaps", []),
-                per_question=per_answer,
+        # Tips and narrative both depend only on the scorecard, so run them together.
+        (tips_payload, tips_routing), (narrative_payload, narrative_routing) = await asyncio.gather(
+            self._try_llm_json(
+                LLMTask.TIPS_GENERATION,
+                build_tips_messages(
+                    role=interview["role"],
+                    dimension_scores=scorecard.get("dimension_scores", {}),
+                    critical_gaps=scorecard.get("critical_gaps", []),
+                    per_question=per_answer,
+                ),
+                interview_id,
+                policy,
             ),
-            interview_id,
-            policy,
-        )
-        if routing:
-            trace["tips"] = routing
-        if tips_payload:
-            tips = tips_payload
-
-        narrative = None
-        narrative_payload, routing = await self._try_llm_json(
-            LLMTask.REPORT_NARRATIVE,
-            build_report_narrative_messages(
-                role=interview["role"],
-                scorecard=scorecard,
-                aggregate=aggregate,
+            self._try_llm_json(
+                LLMTask.REPORT_NARRATIVE,
+                build_report_narrative_messages(
+                    role=interview["role"],
+                    scorecard=scorecard,
+                    aggregate=aggregate,
+                ),
+                interview_id,
+                policy,
             ),
-            interview_id,
-            policy,
         )
-        if routing:
-            trace["narrative"] = routing
-        if narrative_payload:
-            narrative = narrative_payload
+        if tips_routing:
+            trace["tips"] = tips_routing
+        tips = tips_payload or None
+        if narrative_routing:
+            trace["narrative"] = narrative_routing
+        narrative = narrative_payload or None
 
         coaching = [answer.get("analysis", {}).get("suggested_rewrite") for answer in answers if answer.get("analysis")]
 
@@ -674,7 +672,8 @@ class InterviewService:
         from app.services import webhook
 
         target = callback_url or interview.get("callback_url")
-        await webhook.deliver(
+        # Do not make the student wait on the receiver (deliver retries with sleeps and 10 s timeouts).
+        webhook.fire_and_forget(
             target,
             "interview.completed",
             {

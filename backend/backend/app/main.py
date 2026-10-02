@@ -24,6 +24,10 @@ async def lifespan(_: FastAPI):
         from app.llm.router import load_router_config
 
         validate_against_router(get_plans(), load_router_config(settings.models_config_path))
+    if settings.stt_preload:
+        from app.voice import stt
+
+        await stt.preload()
     task = asyncio.create_task(_retention_loop()) if settings.retention_days > 0 else None
     try:
         yield

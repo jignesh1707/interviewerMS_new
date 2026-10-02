@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 
 from app.config import get_settings
-from app.core.errors import SpeechUnavailableError, ValidationAppError
+from app.core.errors import ServiceUnavailableError, SpeechUnavailableError, ValidationAppError
 from app.core.logging import get_logger
 from app.voice.audio import safe_audio_suffix
 
@@ -12,6 +12,8 @@ logger = get_logger(__name__)
 
 _model = None
 _model_lock = asyncio.Lock()
+_slots: asyncio.Semaphore | None = None
+_slots_size = 0
 
 
 def _load_model():
@@ -45,6 +47,23 @@ async def _get_model():
     return _model
 
 
+def _slot_semaphore() -> asyncio.Semaphore:
+    """One semaphore per process, rebuilt if the configured limit changes (tests do that)."""
+    global _slots, _slots_size
+    size = max(1, get_settings().stt_max_concurrent)
+    if _slots is None or _slots_size != size:
+        _slots, _slots_size = asyncio.Semaphore(size), size
+    return _slots
+
+
+async def preload() -> None:
+    """Load the model at startup. Voice is optional in development, so a missing install is only logged."""
+    try:
+        await _get_model()
+    except SpeechUnavailableError as exc:
+        logger.warning("stt_preload_skipped reason=%s", exc.message)
+
+
 def _transcribe_sync(audio_path: str) -> dict:
     settings = get_settings()
     model = _model
@@ -74,6 +93,23 @@ def _transcribe_sync(audio_path: str) -> dict:
     }
 
 
+async def _transcribe_limited(audio_path: str) -> dict:
+    settings = get_settings()
+    slots = _slot_semaphore()
+    try:
+        await asyncio.wait_for(slots.acquire(), timeout=settings.stt_queue_timeout_seconds)
+    except asyncio.TimeoutError:
+        logger.warning("stt_busy waited=%ss", settings.stt_queue_timeout_seconds)
+        raise ServiceUnavailableError(
+            "speech recognition is busy, retry shortly",
+            headers={"Retry-After": "5"},
+        ) from None
+    try:
+        return await asyncio.to_thread(_transcribe_sync, audio_path)
+    finally:
+        slots.release()
+
+
 async def transcribe_bytes(content: bytes, filename: str = "answer.webm") -> dict:
     settings = get_settings()
     if not content:
@@ -93,7 +129,7 @@ async def transcribe_bytes(content: bytes, filename: str = "answer.webm") -> dic
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as handle:
             handle.write(content)
             tmp_path = handle.name
-        result = await asyncio.to_thread(_transcribe_sync, tmp_path)
+        result = await _transcribe_limited(tmp_path)
     except SpeechUnavailableError:
         raise
     except Exception as exc:  # noqa: BLE001

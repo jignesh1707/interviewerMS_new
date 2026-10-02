@@ -121,6 +121,12 @@ class Settings(BaseSettings):
     whisper_compute_type: str = "int8"
     whisper_language: str = ""
     stt_max_upload_mb: int = 25
+    # Transcriptions running at once per machine (CPU bound). Others wait up to stt_queue_timeout_seconds, then get a
+    # 503 with Retry-After so the client can retry instead of every request slowing down together.
+    stt_max_concurrent: int = 2
+    stt_queue_timeout_seconds: float = 20.0
+    # Load the Whisper model when the service starts instead of on the first answer.
+    stt_preload: bool = True
 
     piper_binary: str = "piper"
     piper_model_path: str = ""
