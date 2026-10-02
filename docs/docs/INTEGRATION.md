@@ -11,7 +11,11 @@ Send the API key on every `/api/v1` request (except `/health` and `/ready`):
 X-API-Key: <key>
 ```
 
-Configure accepted keys on the service with `API_KEYS=key-one,key-two`.
+Configure accepted keys on the service with `API_KEYS=key-one,key-two`, or `API_KEYS=resumetojob:<key>` to name the tenant.
+
+Each key maps to a tenant. A tenant can only list, read, answer and finish interviews it created; anything else returns 404. Give resumetojob its own key.
+
+Outside `ENVIRONMENT=development` the service refuses to start if a key is the default, shorter than 32 characters, or `CORS_ORIGINS` is `*`. Generate keys with `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
 
 ## 2. Two integration modes
 
@@ -105,6 +109,10 @@ When done, call `POST /api/v1/interviews/{id}/finish` to receive the report, or 
 `routing_trace` tells you which provider and tier served each step, and how many failovers happened.
 
 ## 5. Webhooks
+
+`callback_url` must be `https`, must not embed credentials, and must resolve only to public addresses (private, loopback and link-local targets are rejected, and redirects are not followed). Set `CALLBACK_ALLOWED_HOSTS=resumetojob.example.com` to restrict it to your own receiver. The check runs again at delivery time.
+
+Limits (all configurable): `MAX_DOC_UPLOAD_MB` (5), `MAX_TEXT_CHARS` (100000), `MAX_TRANSCRIPT_CHARS` (20000), `MAX_METADATA_BYTES` (16384), `STT_MAX_UPLOAD_MB` (25). Oversized requests return 413 or 422.
 
 Events:
 

@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 from app.api import routes_interviews, routes_speech, routes_system
 from app.config import get_settings
 from app.core.errors import AppError
+from app.core.limits import BodyLimitMiddleware
 from app.core.logging import configure_logging, get_logger
 
 configure_logging()
@@ -20,6 +21,7 @@ app = FastAPI(
     ),
 )
 
+app.add_middleware(BodyLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,

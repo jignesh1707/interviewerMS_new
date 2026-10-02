@@ -12,6 +12,7 @@ from app.core.errors import NotFoundError
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS interviews (
     id TEXT PRIMARY KEY,
+    tenant_id TEXT,
     role TEXT NOT NULL,
     candidate_name TEXT,
     status TEXT NOT NULL,
@@ -92,6 +93,10 @@ class Store:
 
     def _migrate(self) -> None:
         _ensure_column(self._connection, "answers", "question_id", "TEXT")
+        _ensure_column(self._connection, "interviews", "tenant_id", "TEXT")
+        self._connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_interviews_tenant ON interviews (tenant_id, created_at)"
+        )
         self._connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_answers_question ON answers (interview_id, question_id)"
         )
@@ -122,6 +127,7 @@ class Store:
         config: dict[str, Any],
         callback_url: str | None,
         metadata: dict[str, Any],
+        tenant_id: str | None = None,
     ) -> dict[str, Any]:
         interview_id = uuid.uuid4().hex
         now = utc_now()
@@ -129,8 +135,8 @@ class Store:
             """
             INSERT INTO interviews (
                 id, role, candidate_name, status, resume_text, jd_text,
-                config, callback_url, metadata, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                config, callback_url, metadata, created_at, updated_at, tenant_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 interview_id,
@@ -144,6 +150,7 @@ class Store:
                 json.dumps(metadata),
                 now,
                 now,
+                tenant_id,
             ),
         )
         return self.get_interview(interview_id)
@@ -153,6 +160,13 @@ class Store:
         if not row:
             raise NotFoundError(f"interview '{interview_id}' not found")
         return self._hydrate_interview(row)
+
+    def get_interview_for_tenant(self, interview_id: str, tenant_id: str) -> dict[str, Any]:
+        """Fetch an interview owned by tenant_id. Other tenants and legacy untagged rows give 404."""
+        interview = self.get_interview(interview_id)
+        if interview.get("tenant_id") != tenant_id:
+            raise NotFoundError(f"interview '{interview_id}' not found")
+        return interview
 
     def get_interview_or_none(self, interview_id: str) -> dict[str, Any] | None:
         row = self._query_one("SELECT * FROM interviews WHERE id = ?", (interview_id,))
@@ -191,9 +205,10 @@ class Store:
         self._execute(f"UPDATE interviews SET {', '.join(assignments)} WHERE id = ?", tuple(values))
         return self.get_interview(interview_id)
 
-    def list_interviews(self, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+    def list_interviews(self, tenant_id: str, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
         rows = self._query_all(
-            "SELECT * FROM interviews ORDER BY created_at DESC LIMIT ? OFFSET ?", (limit, offset)
+            "SELECT * FROM interviews WHERE tenant_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (tenant_id, limit, offset),
         )
         return [self._hydrate_interview(row) for row in rows]
 

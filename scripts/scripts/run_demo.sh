@@ -8,7 +8,7 @@ cd "$ROOT/backend"
 if [ -d ".venv" ]; then
   source .venv/bin/activate
 fi
-uvicorn app.main:app --host "${HOST:-0.0.0.0}" --port "${PORT:-8080}" &
+uvicorn app.main:app --host "${HOST:-127.0.0.1}" --port "${PORT:-8080}" &
 BACKEND_PID=$!
 
 cleanup() {

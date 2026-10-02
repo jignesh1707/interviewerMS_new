@@ -21,6 +21,11 @@ class ValidationAppError(AppError):
     code = "validation_error"
 
 
+class PayloadTooLargeError(AppError):
+    status_code = 413
+    code = "payload_too_large"
+
+
 class AuthError(AppError):
     status_code = 401
     code = "unauthorized"

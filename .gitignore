@@ -112,7 +112,7 @@
 *.key
 
 # Application data (SQLite database, uploaded audio, local voice models)
-backend/data/
+**/data/
 
 # Temporary files
 *.tmp

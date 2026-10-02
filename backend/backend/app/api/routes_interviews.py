@@ -1,10 +1,14 @@
 import json
 from typing import Annotated
 
+from pydantic import ValidationError
+
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 
 from app.api.deps import require_api_key
+from app.config import get_settings
 from app.core.errors import ValidationAppError
+from app.core.limits import read_capped
 from app.schemas.interview import (
     AnswerResponse,
     AnswerTextRequest,
@@ -17,13 +21,15 @@ from app.services.interview_service import get_interview_service
 from app.services.storage import get_store
 from app.voice import stt
 
+Tenant = Annotated[str, Depends(require_api_key)]
+
 router = APIRouter(prefix="/interviews", tags=["interviews"], dependencies=[Depends(require_api_key)])
 
 
 @router.post("", response_model=CreateInterviewResponse, status_code=201)
-async def create_interview(payload: CreateInterviewRequest) -> CreateInterviewResponse:
+async def create_interview(payload: CreateInterviewRequest, tenant: Tenant) -> CreateInterviewResponse:
     service = get_interview_service()
-    result = await service.create_interview(payload)
+    result = await service.create_interview(payload, tenant_id=tenant)
     return CreateInterviewResponse(
         interview=service.build_status(result["interview"]),
         questions=result["questions"],
@@ -33,6 +39,7 @@ async def create_interview(payload: CreateInterviewRequest) -> CreateInterviewRe
 @router.post("/upload", response_model=CreateInterviewResponse, status_code=201)
 async def create_interview_with_files(
     role: Annotated[str, Form()],
+    tenant: Tenant,
     candidate_name: Annotated[str | None, Form()] = None,
     resume_text: Annotated[str | None, Form()] = None,
     jd_text: Annotated[str | None, Form()] = None,
@@ -44,24 +51,30 @@ async def create_interview_with_files(
 ) -> CreateInterviewResponse:
     config = _parse_json_form(config_json, "config_json")
     metadata = _parse_json_form(metadata_json, "metadata_json")
-    payload = CreateInterviewRequest(
-        role=role,
-        candidate_name=candidate_name,
-        resume_text=resume_text,
-        jd_text=jd_text,
-        callback_url=callback_url,
-        metadata=metadata or {},
-        config=config or {},
-    )
+    try:
+        payload = CreateInterviewRequest(
+            role=role,
+            candidate_name=candidate_name,
+            resume_text=resume_text,
+            jd_text=jd_text,
+            callback_url=callback_url,
+            metadata=metadata or {},
+            config=config or {},
+        )
+    except ValidationError as exc:
+        raise ValidationAppError("invalid interview payload", details={"errors": exc.errors(include_url=False, include_context=False, include_input=False)}) from exc
+    doc_limit = get_settings().max_doc_upload_mb * 1024 * 1024
     resume_bytes = None
     jd_bytes = None
     if resume_file and resume_file.filename:
-        resume_bytes = (resume_file.filename, await resume_file.read())
+        resume_bytes = (resume_file.filename, await read_capped(resume_file, doc_limit, "resume_file"))
     if jd_file and jd_file.filename:
-        jd_bytes = (jd_file.filename, await jd_file.read())
+        jd_bytes = (jd_file.filename, await read_capped(jd_file, doc_limit, "jd_file"))
 
     service = get_interview_service()
-    result = await service.create_interview(payload, resume_bytes=resume_bytes, jd_bytes=jd_bytes)
+    result = await service.create_interview(
+        payload, resume_bytes=resume_bytes, jd_bytes=jd_bytes, tenant_id=tenant
+    )
     return CreateInterviewResponse(
         interview=service.build_status(result["interview"]),
         questions=result["questions"],
@@ -70,20 +83,21 @@ async def create_interview_with_files(
 
 @router.get("")
 async def list_interviews(
+    tenant: Tenant,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> dict:
     store = get_store()
-    interviews = store.list_interviews(limit=limit, offset=offset)
+    interviews = store.list_interviews(tenant, limit=limit, offset=offset)
     service = get_interview_service()
     return {"items": [service.build_status(item) for item in interviews], "limit": limit, "offset": offset}
 
 
 @router.get("/{interview_id}")
-async def get_interview(interview_id: str) -> dict:
+async def get_interview(interview_id: str, tenant: Tenant) -> dict:
     service = get_interview_service()
     store = get_store()
-    interview = store.get_interview(interview_id)
+    interview = store.get_interview_for_tenant(interview_id, tenant)
     return {
         "interview": service.build_status(interview),
         "questions": interview.get("questions") or [],
@@ -92,20 +106,21 @@ async def get_interview(interview_id: str) -> dict:
 
 
 @router.get("/{interview_id}/questions")
-async def get_questions(interview_id: str) -> dict:
-    interview = get_store().get_interview(interview_id)
+async def get_questions(interview_id: str, tenant: Tenant) -> dict:
+    interview = get_store().get_interview_for_tenant(interview_id, tenant)
     return {"items": interview.get("questions") or []}
 
 
 @router.get("/{interview_id}/answers")
-async def get_answers(interview_id: str) -> dict:
+async def get_answers(interview_id: str, tenant: Tenant) -> dict:
     store = get_store()
-    store.get_interview(interview_id)
+    store.get_interview_for_tenant(interview_id, tenant)
     return {"items": store.list_answers(interview_id)}
 
 
 @router.post("/{interview_id}/answers", response_model=AnswerResponse)
-async def submit_text_answer(interview_id: str, payload: AnswerTextRequest) -> AnswerResponse:
+async def submit_text_answer(interview_id: str, tenant: Tenant, payload: AnswerTextRequest) -> AnswerResponse:
+    get_store().get_interview_for_tenant(interview_id, tenant)
     service = get_interview_service()
     result = await service.submit_answer(
         interview_id,
@@ -120,11 +135,13 @@ async def submit_text_answer(interview_id: str, payload: AnswerTextRequest) -> A
 @router.post("/{interview_id}/answers/audio", response_model=AnswerResponse)
 async def submit_audio_answer(
     interview_id: str,
+    tenant: Tenant,
     question_index: Annotated[int, Form()],
     audio: Annotated[UploadFile, File()],
     duration_seconds: Annotated[float | None, Form()] = None,
 ) -> AnswerResponse:
-    content = await audio.read()
+    get_store().get_interview_for_tenant(interview_id, tenant)
+    content = await read_capped(audio, get_settings().stt_max_upload_mb * 1024 * 1024, "audio")
     filename = audio.filename or "answer.webm"
     transcription = await stt.transcribe_bytes(content, filename)
 
@@ -147,9 +164,9 @@ async def submit_audio_answer(
 
 
 @router.get("/{interview_id}/transcript")
-async def get_transcript(interview_id: str) -> dict:
+async def get_transcript(interview_id: str, tenant: Tenant) -> dict:
     store = get_store()
-    store.get_interview(interview_id)
+    store.get_interview_for_tenant(interview_id, tenant)
     answers = store.list_answers(interview_id)
     return {
         "items": [
@@ -166,9 +183,10 @@ async def get_transcript(interview_id: str) -> dict:
 
 
 @router.post("/{interview_id}/finish", response_model=ReportResponse)
-async def finish_interview(interview_id: str) -> ReportResponse:
+async def finish_interview(interview_id: str, tenant: Tenant) -> ReportResponse:
     service = get_interview_service()
     store = get_store()
+    store.get_interview_for_tenant(interview_id, tenant)
     report = await service.finish_interview(interview_id)
     saved = store.get_report(interview_id)
     return ReportResponse(
@@ -180,9 +198,9 @@ async def finish_interview(interview_id: str) -> ReportResponse:
 
 
 @router.get("/{interview_id}/report", response_model=ReportResponse)
-async def get_report(interview_id: str) -> ReportResponse:
+async def get_report(interview_id: str, tenant: Tenant) -> ReportResponse:
     store = get_store()
-    interview = store.get_interview(interview_id)
+    interview = store.get_interview_for_tenant(interview_id, tenant)
     saved = store.get_report(interview_id)
     return ReportResponse(
         interview_id=interview_id,
@@ -193,9 +211,9 @@ async def get_report(interview_id: str) -> ReportResponse:
 
 
 @router.get("/{interview_id}/events")
-async def get_events(interview_id: str) -> dict:
+async def get_events(interview_id: str, tenant: Tenant) -> dict:
     store = get_store()
-    store.get_interview(interview_id)
+    store.get_interview_for_tenant(interview_id, tenant)
     return {"items": store.list_events(interview_id)}
 
 
@@ -213,7 +231,7 @@ def _parse_json_form(raw: str | None, field: str) -> dict | None:
 
 
 @router.get("/{interview_id}/status", response_model=InterviewStatus)
-async def get_status(interview_id: str) -> InterviewStatus:
+async def get_status(interview_id: str, tenant: Tenant) -> InterviewStatus:
     service = get_interview_service()
-    interview = get_store().get_interview(interview_id)
+    interview = get_store().get_interview_for_tenant(interview_id, tenant)
     return InterviewStatus(**service.build_status(interview))

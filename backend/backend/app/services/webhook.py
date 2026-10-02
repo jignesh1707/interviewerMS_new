@@ -8,7 +8,9 @@ from typing import Any
 import httpx
 
 from app.config import get_settings
+from app.core.errors import ValidationAppError
 from app.core.logging import get_logger
+from app.core.url_safety import validate_callback_url
 
 logger = get_logger(__name__)
 
@@ -22,6 +24,12 @@ async def deliver(url: str | None, event: str, data: dict[str, Any]) -> dict[str
     target = url or settings.webhook_url
     if not target:
         return {"delivered": False, "reason": "no_webhook_url"}
+    try:
+        # Re-validate at send time: DNS may have changed since the interview was created.
+        await asyncio.to_thread(validate_callback_url, target)
+    except ValidationAppError as exc:
+        logger.warning("webhook_blocked event=%s reason=%s", event, exc.message)
+        return {"delivered": False, "reason": f"blocked: {exc.message}", "attempts": 0}
 
     body = {
         "event": event,
@@ -34,7 +42,7 @@ async def deliver(url: str | None, event: str, data: dict[str, Any]) -> dict[str
         headers["X-Interview-Signature"] = _sign(payload_bytes, settings.webhook_secret)
 
     last_error = ""
-    async with httpx.AsyncClient(timeout=settings.webhook_timeout_seconds) as client:
+    async with httpx.AsyncClient(timeout=settings.webhook_timeout_seconds, follow_redirects=False) as client:
         for attempt in range(1, settings.webhook_max_attempts + 1):
             try:
                 response = await client.post(target, content=payload_bytes, headers=headers)
@@ -53,5 +61,10 @@ async def deliver(url: str | None, event: str, data: dict[str, Any]) -> dict[str
     return {"delivered": False, "reason": last_error, "attempts": settings.webhook_max_attempts}
 
 
+_background: set[asyncio.Task] = set()
+
+
 def fire_and_forget(url: str | None, event: str, data: dict[str, Any]) -> None:
-    asyncio.create_task(deliver(url, event, data))
+    task = asyncio.create_task(deliver(url, event, data))
+    _background.add(task)
+    task.add_done_callback(_background.discard)

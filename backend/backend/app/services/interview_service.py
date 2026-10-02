@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from pathlib import Path
 from typing import Any
@@ -5,6 +6,7 @@ from typing import Any
 from app.config import get_settings
 from app.core.errors import AllProvidersFailedError, ValidationAppError
 from app.core.logging import get_logger
+from app.core.url_safety import validate_callback_url
 from app.llm.providers.base import LLMMessage
 from app.llm.router import ModelRouter, get_router
 from app.llm.safety import redact_secrets
@@ -38,7 +40,10 @@ class InterviewService:
         jd_bytes: tuple[str, bytes] | None = None,
         resume_summary_text: str | None = None,
         jd_summary_text: str | None = None,
+        tenant_id: str | None = None,
     ) -> dict[str, Any]:
+        if payload.callback_url:
+            await asyncio.to_thread(validate_callback_url, payload.callback_url)
         resume_text = payload.resume_text
         jd_text = payload.jd_text
         if resume_bytes:
@@ -62,6 +67,7 @@ class InterviewService:
             config=config,
             callback_url=payload.callback_url,
             metadata=payload.metadata,
+            tenant_id=tenant_id,
         )
         interview_id = interview["id"]
         self.store.add_event(interview_id, "interview.created", {"role": payload.role})
