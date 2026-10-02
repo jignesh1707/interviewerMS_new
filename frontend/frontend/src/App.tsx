@@ -11,6 +11,7 @@ import {
   submitAudioAnswer,
   submitTextAnswer,
 } from './api'
+import { CountdownState, countdownAt, formatClock, snapshotFrom } from './countdown'
 
 type Stage = 'setup' | 'interview' | 'report'
 
@@ -69,6 +70,51 @@ function useRecorder() {
   return { recording, seconds, start, stop }
 }
 
+// Ticks while an interview with a server-side deadline is open. Null when the service sent no deadline.
+function useCountdown(interview: InterviewStatus | null): CountdownState | null {
+  const snapshot = useMemo(() => (interview ? snapshotFrom(interview, performance.now()) : null), [interview])
+  const [state, setState] = useState<CountdownState | null>(null)
+
+  useEffect(() => {
+    if (!snapshot) {
+      setState(null)
+      return
+    }
+    const tick = () => {
+      const next = countdownAt(snapshot, performance.now())
+      setState(next)
+      if (next.phase === 'expired') window.clearInterval(id)
+    }
+    const id = window.setInterval(tick, 250)
+    tick()
+    return () => window.clearInterval(id)
+  }, [snapshot])
+
+  return state
+}
+
+const PHASE_ANNOUNCEMENT: Record<CountdownState['phase'], string> = {
+  running: '',
+  warning: '5 minutes left.',
+  urgent: '1 minute left.',
+  grace: 'Time is up. Finish your current answer.',
+  expired: 'The time limit has been reached.',
+}
+
+function Countdown({ state }: { state: CountdownState }) {
+  return (
+    <>
+      <span className={`timer ${state.phase}`} role="timer" aria-live="off" aria-label="Time remaining">
+        {formatClock(state.msToEnd)}
+      </span>
+      {/* Announced only when the phase changes, so screen readers are not read every second. */}
+      <span className="sr-only" aria-live="polite">
+        {PHASE_ANNOUNCEMENT[state.phase]}
+      </span>
+    </>
+  )
+}
+
 export default function App() {
   // Session-scoped (cleared when the tab closes) and never pre-filled with a shared default key.
   // For local demos you can set VITE_DEV_API_KEY in frontend/.env.local; it is ignored in production builds.
@@ -87,6 +133,13 @@ export default function App() {
   const [report, setReport] = useState<any>(null)
   const [manualText, setManualText] = useState('')
   const recorder = useRecorder()
+  const countdown = useCountdown(stage === 'interview' ? interview : null)
+  const timeUp = countdown?.phase === 'expired'
+
+  // The server refuses answers after the deadline, so stop an open recording instead of letting it be lost.
+  useEffect(() => {
+    if (timeUp && recorder.recording) recorder.stop().catch(() => undefined)
+  }, [timeUp, recorder.recording])
 
   useEffect(() => {
     sessionStorage.setItem('vi_api_key', apiKey)
@@ -112,15 +165,18 @@ export default function App() {
     resumeFile: File | null
     jdFile: File | null
     callbackUrl: string
+    externalRef: string
+    durationMinutes: string
   }) => {
     setBusy(true)
     setError('')
     try {
-      const config = {
+      const config: Record<string, unknown> = {
         question_count: form.questionCount,
         analyze_per_answer: true,
         ask_followups: true,
       }
+      if (form.durationMinutes) config.duration_minutes = Number(form.durationMinutes)
       let data
       if (form.resumeFile || form.jdFile) {
         const payload = new FormData()
@@ -129,6 +185,7 @@ export default function App() {
         if (form.resumeText) payload.append('resume_text', form.resumeText)
         if (form.jdText) payload.append('jd_text', form.jdText)
         if (form.callbackUrl) payload.append('callback_url', form.callbackUrl)
+        if (form.externalRef) payload.append('external_ref', form.externalRef)
         payload.append('config_json', JSON.stringify(config))
         if (form.resumeFile) payload.append('resume_file', form.resumeFile)
         if (form.jdFile) payload.append('jd_file', form.jdFile)
@@ -140,6 +197,7 @@ export default function App() {
           resume_text: form.resumeText || undefined,
           jd_text: form.jdText || undefined,
           callback_url: form.callbackUrl || undefined,
+          external_ref: form.externalRef || undefined,
           config,
         })
       }
@@ -268,8 +326,33 @@ export default function App() {
                 Question {currentIndex + 1} of {questions.length} | answered {answeredCount}
               </div>
             </div>
-            <span className={`pill ${currentQuestion.difficulty}`}>{currentQuestion.difficulty}</span>
+            <div className="head-right">
+              {countdown && <Countdown state={countdown} />}
+              <span className={`pill ${currentQuestion.difficulty}`}>{currentQuestion.difficulty}</span>
+            </div>
           </div>
+
+          {countdown?.phase === 'grace' && (
+            <div className="time-banner warn">Time is up. Finish your current answer, then generate your report.</div>
+          )}
+          {timeUp && (
+            <div className="time-banner stop">
+              <span>
+                {answeredCount > 0
+                  ? 'The time limit has been reached. Generate your report.'
+                  : 'The time limit has been reached before any answer was recorded.'}
+              </span>
+              {answeredCount > 0 ? (
+                <button onClick={handleFinish} disabled={busy} type="button">
+                  Generate final report
+                </button>
+              ) : (
+                <button className="ghost" onClick={restart} type="button">
+                  Start another interview
+                </button>
+              )}
+            </div>
+          )}
 
           <blockquote>{currentQuestion.question}</blockquote>
           <div className="muted small">
@@ -281,7 +364,7 @@ export default function App() {
               Read aloud
             </button>
             {!recorder.recording ? (
-              <button onClick={recorder.start} type="button">
+              <button onClick={recorder.start} disabled={timeUp} type="button">
                 Start recording
               </button>
             ) : (
@@ -298,7 +381,7 @@ export default function App() {
               onChange={(event) => setManualText(event.target.value)}
               rows={4}
             />
-            <button className="ghost" onClick={submitTyped} disabled={busy || !manualText.trim()} type="button">
+            <button className="ghost" onClick={submitTyped} disabled={busy || timeUp || !manualText.trim()} type="button">
               Submit typed answer
             </button>
           </div>
@@ -409,6 +492,8 @@ function SetupForm({
     resumeFile: File | null
     jdFile: File | null
     callbackUrl: string
+    externalRef: string
+    durationMinutes: string
   }) => void
 }) {
   const [role, setRole] = useState('Backend Engineer')
@@ -419,6 +504,8 @@ function SetupForm({
   const [resumeFile, setResumeFile] = useState<File | null>(null)
   const [jdFile, setJdFile] = useState<File | null>(null)
   const [callbackUrl, setCallbackUrl] = useState('')
+  const [externalRef, setExternalRef] = useState('')
+  const [durationMinutes, setDurationMinutes] = useState('')
 
   return (
     <section className="card">
@@ -446,6 +533,24 @@ function SetupForm({
           Webhook callback URL
           <input value={callbackUrl} onChange={(event) => setCallbackUrl(event.target.value)} placeholder="optional" />
         </label>
+        <label>
+          Student ID
+          <input
+            value={externalRef}
+            onChange={(event) => setExternalRef(event.target.value)}
+            placeholder="required when plans are enabled"
+          />
+        </label>
+        <label>
+          Length (minutes)
+          <input
+            type="number"
+            min={1}
+            value={durationMinutes}
+            onChange={(event) => setDurationMinutes(event.target.value)}
+            placeholder="plan default"
+          />
+        </label>
       </div>
       <div className="grid">
         <label>
@@ -468,7 +573,18 @@ function SetupForm({
       <button
         disabled={busy}
         onClick={() =>
-          onCreate({ role, candidateName, resumeText, jdText, questionCount, resumeFile, jdFile, callbackUrl })
+          onCreate({
+            role,
+            candidateName,
+            resumeText,
+            jdText,
+            questionCount,
+            resumeFile,
+            jdFile,
+            callbackUrl,
+            externalRef,
+            durationMinutes,
+          })
         }
         type="button"
       >
