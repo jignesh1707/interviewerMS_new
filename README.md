@@ -144,7 +144,9 @@ All settings are environment variables; see `backend/.env.example`.
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `API_KEYS` | Comma-separated accepted API keys | `dev-key-change-me` |
-| `DATABASE_PATH` | SQLite database file | `backend/data/interviews.db` |
+| `DATABASE_URL` | Postgres connection string (production); empty uses SQLite | empty |
+| `REDIS_URL` | Shared rate-limit state (Upstash); empty uses per-process memory | empty |
+| `DATABASE_PATH` | SQLite database file (used when `DATABASE_URL` is empty) | `backend/data/interviews.db` |
 | `STORAGE_DIR` | Root for audio and artifacts | `backend/data` |
 | `MODELS_CONFIG_PATH` | Router tier/task config | `backend/models.yaml` |
 | `DEEPSEEK_API_KEY` / `OPENROUTER_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | Provider credentials | empty |

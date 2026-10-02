@@ -30,7 +30,7 @@ async def _retention_loop() -> None:
 
     while True:
         try:
-            await asyncio.to_thread(get_interview_service().purge_expired)
+            await get_interview_service().purge_expired()
         except Exception:  # noqa: BLE001
             logger.exception("retention_purge_failed")
         await asyncio.sleep(max(1, settings.retention_sweep_minutes) * 60)

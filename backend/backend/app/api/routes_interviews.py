@@ -18,7 +18,7 @@ from app.schemas.interview import (
     ReportResponse,
 )
 from app.services.interview_service import get_interview_service
-from app.services.storage import get_store
+from app.services.storage import get_async_store
 from app.voice import stt
 
 Tenant = Annotated[str, Depends(require_api_key)]
@@ -31,7 +31,7 @@ async def create_interview(payload: CreateInterviewRequest, tenant: Tenant) -> C
     service = get_interview_service()
     result = await service.create_interview(payload, tenant_id=tenant)
     return CreateInterviewResponse(
-        interview=service.build_status(result["interview"]),
+        interview=await service.build_status(result["interview"]),
         questions=result["questions"],
     )
 
@@ -45,6 +45,7 @@ async def create_interview_with_files(
     jd_text: Annotated[str | None, Form()] = None,
     callback_url: Annotated[str | None, Form()] = None,
     consent_to_ai_processing: Annotated[bool | None, Form()] = None,
+    external_ref: Annotated[str | None, Form(max_length=200)] = None,
     config_json: Annotated[str | None, Form()] = None,
     metadata_json: Annotated[str | None, Form()] = None,
     resume_file: Annotated[UploadFile | None, File()] = None,
@@ -60,6 +61,7 @@ async def create_interview_with_files(
             jd_text=jd_text,
             callback_url=callback_url,
             consent_to_ai_processing=consent_to_ai_processing,
+            external_ref=external_ref,
             metadata=metadata or {},
             config=config or {},
         )
@@ -78,7 +80,7 @@ async def create_interview_with_files(
         payload, resume_bytes=resume_bytes, jd_bytes=jd_bytes, tenant_id=tenant
     )
     return CreateInterviewResponse(
-        interview=service.build_status(result["interview"]),
+        interview=await service.build_status(result["interview"]),
         questions=result["questions"],
     )
 
@@ -88,20 +90,26 @@ async def list_interviews(
     tenant: Tenant,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
+    external_ref: Annotated[str | None, Query(max_length=200)] = None,
 ) -> dict:
-    store = get_store()
-    interviews = store.list_interviews(tenant, limit=limit, offset=offset)
+    store = get_async_store()
+    interviews = await store.list_interviews(tenant, limit=limit, offset=offset, external_ref=external_ref)
     service = get_interview_service()
-    return {"items": [service.build_status(item) for item in interviews], "limit": limit, "offset": offset}
+    counts = await store.answer_counts([item["id"] for item in interviews])
+    return {
+        "items": [await service.build_status(item, counts.get(item["id"], 0)) for item in interviews],
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @router.get("/{interview_id}")
 async def get_interview(interview_id: str, tenant: Tenant) -> dict:
     service = get_interview_service()
-    store = get_store()
-    interview = store.get_interview_for_tenant(interview_id, tenant)
+    store = get_async_store()
+    interview = await store.get_interview_for_tenant(interview_id, tenant)
     return {
-        "interview": service.build_status(interview),
+        "interview": await service.build_status(interview),
         "questions": interview.get("questions") or [],
         "match": interview.get("match_analysis"),
     }
@@ -109,20 +117,20 @@ async def get_interview(interview_id: str, tenant: Tenant) -> dict:
 
 @router.get("/{interview_id}/questions")
 async def get_questions(interview_id: str, tenant: Tenant) -> dict:
-    interview = get_store().get_interview_for_tenant(interview_id, tenant)
+    interview = await get_async_store().get_interview_for_tenant(interview_id, tenant)
     return {"items": interview.get("questions") or []}
 
 
 @router.get("/{interview_id}/answers")
 async def get_answers(interview_id: str, tenant: Tenant) -> dict:
-    store = get_store()
-    store.get_interview_for_tenant(interview_id, tenant)
-    return {"items": store.list_answers(interview_id)}
+    store = get_async_store()
+    await store.get_interview_for_tenant(interview_id, tenant)
+    return {"items": await store.list_answers(interview_id)}
 
 
 @router.post("/{interview_id}/answers", response_model=AnswerResponse, dependencies=[Depends(expensive_call)])
 async def submit_text_answer(interview_id: str, tenant: Tenant, payload: AnswerTextRequest) -> AnswerResponse:
-    get_store().get_interview_for_tenant(interview_id, tenant)
+    await get_async_store().get_interview_for_tenant(interview_id, tenant)
     service = get_interview_service()
     result = await service.submit_answer(
         interview_id,
@@ -142,7 +150,7 @@ async def submit_audio_answer(
     audio: Annotated[UploadFile, File()],
     duration_seconds: Annotated[float | None, Form()] = None,
 ) -> AnswerResponse:
-    get_store().get_interview_for_tenant(interview_id, tenant)
+    await get_async_store().get_interview_for_tenant(interview_id, tenant)
     content = await read_capped(audio, get_settings().stt_max_upload_mb * 1024 * 1024, "audio")
     filename = audio.filename or "answer.webm"
     transcription = await stt.transcribe_bytes(content, filename)
@@ -167,9 +175,9 @@ async def submit_audio_answer(
 
 @router.get("/{interview_id}/transcript")
 async def get_transcript(interview_id: str, tenant: Tenant) -> dict:
-    store = get_store()
-    store.get_interview_for_tenant(interview_id, tenant)
-    answers = store.list_answers(interview_id)
+    store = get_async_store()
+    await store.get_interview_for_tenant(interview_id, tenant)
+    answers = await store.list_answers(interview_id)
     return {
         "items": [
             {
@@ -187,10 +195,10 @@ async def get_transcript(interview_id: str, tenant: Tenant) -> dict:
 @router.post("/{interview_id}/finish", response_model=ReportResponse, dependencies=[Depends(expensive_call)])
 async def finish_interview(interview_id: str, tenant: Tenant) -> ReportResponse:
     service = get_interview_service()
-    store = get_store()
-    store.get_interview_for_tenant(interview_id, tenant)
+    store = get_async_store()
+    await store.get_interview_for_tenant(interview_id, tenant)
     report = await service.finish_interview(interview_id)
-    saved = store.get_report(interview_id)
+    saved = await store.get_report(interview_id)
     return ReportResponse(
         interview_id=interview_id,
         status="completed",
@@ -201,9 +209,9 @@ async def finish_interview(interview_id: str, tenant: Tenant) -> ReportResponse:
 
 @router.get("/{interview_id}/report", response_model=ReportResponse)
 async def get_report(interview_id: str, tenant: Tenant) -> ReportResponse:
-    store = get_store()
-    interview = store.get_interview_for_tenant(interview_id, tenant)
-    saved = store.get_report(interview_id)
+    store = get_async_store()
+    interview = await store.get_interview_for_tenant(interview_id, tenant)
+    saved = await store.get_report(interview_id)
     return ReportResponse(
         interview_id=interview_id,
         status=interview["status"],
@@ -214,9 +222,9 @@ async def get_report(interview_id: str, tenant: Tenant) -> ReportResponse:
 
 @router.get("/{interview_id}/events")
 async def get_events(interview_id: str, tenant: Tenant) -> dict:
-    store = get_store()
-    store.get_interview_for_tenant(interview_id, tenant)
-    return {"items": store.list_events(interview_id)}
+    store = get_async_store()
+    await store.get_interview_for_tenant(interview_id, tenant)
+    return {"items": await store.list_events(interview_id)}
 
 
 def _parse_json_form(raw: str | None, field: str) -> dict | None:
@@ -232,16 +240,34 @@ def _parse_json_form(raw: str | None, field: str) -> dict | None:
 
 
 
+BY_REF_BATCH = 200
+
+
+@router.delete("/by-ref/{external_ref}")
+async def delete_interviews_by_ref(external_ref: str, tenant: Tenant) -> dict:
+    """Erase every interview this tenant created for one end user (right-to-erasure requests)."""
+    store = get_async_store()
+    service = get_interview_service()
+    deleted = 0
+    while True:
+        ids = await store.list_interview_ids_by_ref(tenant, external_ref, limit=BY_REF_BATCH)
+        if not ids:
+            return {"deleted": deleted}
+        for interview_id in ids:
+            await service.delete_interview(interview_id)
+        deleted += len(ids)
+
+
 @router.delete("/{interview_id}", status_code=204)
 async def delete_interview(interview_id: str, tenant: Tenant) -> Response:
     """Erase an interview and its transcripts, report, events and any stored audio."""
-    get_store().get_interview_for_tenant(interview_id, tenant)
-    get_interview_service().delete_interview(interview_id)
+    await get_async_store().get_interview_for_tenant(interview_id, tenant)
+    await get_interview_service().delete_interview(interview_id)
     return Response(status_code=204)
 
 
 @router.get("/{interview_id}/status", response_model=InterviewStatus)
 async def get_status(interview_id: str, tenant: Tenant) -> InterviewStatus:
     service = get_interview_service()
-    interview = get_store().get_interview_for_tenant(interview_id, tenant)
-    return InterviewStatus(**service.build_status(interview))
+    interview = await get_async_store().get_interview_for_tenant(interview_id, tenant)
+    return InterviewStatus(**(await service.build_status(interview)))

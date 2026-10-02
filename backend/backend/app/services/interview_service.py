@@ -25,7 +25,7 @@ from app.prompts.report import (
 )
 from app.schemas.interview import CreateInterviewRequest
 from app.services import document_parser as parser
-from app.services.storage import Store, get_store
+from app.services.storage import AsyncStore, Store, get_async_store
 from app.services.text_analysis import aggregate_heuristic_scores, analyze_transcript, heuristic_score
 
 logger = get_logger(__name__)
@@ -39,8 +39,10 @@ def _restrict(path: Path, mode: int) -> None:
 
 
 class InterviewService:
-    def __init__(self, store: Store | None = None, router: ModelRouter | None = None) -> None:
-        self.store = store or get_store()
+    def __init__(self, store: Store | AsyncStore | None = None, router: ModelRouter | None = None) -> None:
+        if isinstance(store, Store):
+            store = AsyncStore(store)
+        self.store = store or get_async_store()
         self.router = router or get_router()
         self.settings = get_settings()
 
@@ -76,7 +78,7 @@ class InterviewService:
         match = parser.match_resume_to_jd(resume_summary, jd_summary)
 
         config = payload.config.model_dump()
-        interview = self.store.create_interview(
+        interview = await self.store.create_interview(
             role=payload.role,
             candidate_name=payload.candidate_name,
             resume_text=resume_text,
@@ -85,9 +87,10 @@ class InterviewService:
             callback_url=payload.callback_url,
             metadata=payload.metadata,
             tenant_id=tenant_id,
+            external_ref=getattr(payload, "external_ref", None),
         )
         interview_id = interview["id"]
-        self.store.add_event(
+        await self.store.add_event(
             interview_id,
             "interview.created",
             {"role": payload.role, "consent_to_ai_processing": consent},
@@ -95,7 +98,7 @@ class InterviewService:
         for source, text in (("resume", resume_text), ("jd", jd_text)):
             flags = detect_injection(text or "")
             if flags:
-                self.store.add_event(
+                await self.store.add_event(
                     interview_id, "integrity.possible_prompt_injection", {"source": source, "phrases": flags}
                 )
 
@@ -118,11 +121,11 @@ class InterviewService:
                 resume_narrative=resume_narrative,
             )
         except AllProvidersFailedError as exc:
-            self.store.update_interview(interview_id, status="failed", error=str(exc))
-            self.store.add_event(interview_id, "interview.failed", {"stage": "question_generation"})
+            await self.store.update_interview(interview_id, status="failed", error=str(exc))
+            await self.store.add_event(interview_id, "interview.failed", {"stage": "question_generation"})
             raise
 
-        interview = self.store.update_interview(
+        interview = await self.store.update_interview(
             interview_id,
             status="questions_ready",
             resume_summary=resume_summary,
@@ -130,7 +133,7 @@ class InterviewService:
             match_analysis=match,
             questions=questions,
         )
-        self.store.add_event(
+        await self.store.add_event(
             interview_id,
             "interview.questions_ready",
             {"count": len(questions), "routing": routing},
@@ -219,7 +222,7 @@ class InterviewService:
         duration_seconds: float | None = None,
         audio_path: str | None = None,
     ) -> dict[str, Any]:
-        interview = self.store.get_interview(interview_id)
+        interview = await self.store.get_interview(interview_id)
         questions = list(interview.get("questions") or [])
         if not questions:
             raise ValidationAppError("interview has no questions yet")
@@ -229,7 +232,7 @@ class InterviewService:
             raise ConflictError("interview is already completed; no more answers can be submitted")
 
         resolved_index, target = self._resolve_question(questions, question_id, question_index)
-        if any(item.get("question_id") == target["id"] for item in self.store.list_answers(interview_id)):
+        if any(item.get("question_id") == target["id"] for item in await self.store.list_answers(interview_id)):
             raise ConflictError(
                 "this question has already been answered", details={"question_id": target["id"]}
             )
@@ -261,7 +264,7 @@ class InterviewService:
             )
         if injection_flags:
             metrics["integrity_flags"] = ["possible_prompt_injection"]
-            self.store.add_event(
+            await self.store.add_event(
                 interview_id,
                 "integrity.possible_prompt_injection",
                 {"source": "answer", "question_index": resolved_index, "phrases": injection_flags},
@@ -270,7 +273,7 @@ class InterviewService:
         overall = float(
             (analysis or {}).get("scores", {}).get("overall", heuristics.get("overall", 0))
         )
-        existing_answers = self.store.list_answers(interview_id)
+        existing_answers = await self.store.list_answers(interview_id)
         followup_question = None
         if self._should_generate_followup(
             config=config,
@@ -296,7 +299,7 @@ class InterviewService:
                 followup_question = self._build_followup_question(questions, resolved_index, target, text)
                 questions = self._insert_question(questions, resolved_index + 1, followup_question)
 
-        answer = self.store.add_answer(
+        answer = await self.store.add_answer(
             interview_id=interview_id,
             question_id=target["id"],
             question_index=resolved_index,
@@ -310,15 +313,15 @@ class InterviewService:
             duration_seconds=duration_seconds,
         )
         if followup_question:
-            self.store.update_interview(interview_id, status="in_progress", questions=questions)
+            await self.store.update_interview(interview_id, status="in_progress", questions=questions)
         else:
-            self.store.update_interview(interview_id, status="in_progress")
+            await self.store.update_interview(interview_id, status="in_progress")
 
         answered_ids = {item["question_id"] for item in existing_answers if item.get("question_id")}
         answered_ids.add(target["id"])
         next_question = self._next_pending_question(questions, answered_ids)
 
-        self.store.add_event(
+        await self.store.add_event(
             interview_id,
             "interview.answer_recorded",
             {
@@ -436,17 +439,17 @@ class InterviewService:
         return None
 
     async def finish_interview(self, interview_id: str, *, callback_url: str | None = None) -> dict[str, Any]:
-        interview = self.store.get_interview(interview_id)
+        interview = await self.store.get_interview(interview_id)
         if interview.get("status") == "completed":
-            saved = self.store.get_report(interview_id)
+            saved = await self.store.get_report(interview_id)
             if saved:  # idempotent: do not pay for a second scoring run
                 return saved["payload"]
-        answers = self.store.list_answers(interview_id)
+        answers = await self.store.list_answers(interview_id)
         if not answers:
             raise ValidationAppError("cannot finish an interview with no recorded answers")
 
-        self.store.update_interview(interview_id, status="processing")
-        self.store.add_event(interview_id, "interview.processing", {"answers": len(answers)})
+        await self.store.update_interview(interview_id, status="processing")
+        await self.store.add_event(interview_id, "interview.processing", {"answers": len(answers)})
 
         questions = interview.get("questions") or []
         index_by_id = {item.get("id"): position for position, item in enumerate(questions)}
@@ -557,9 +560,9 @@ class InterviewService:
         from app.services.storage import utc_now
 
         report["generated_at"] = utc_now()
-        self.store.save_report(interview_id, report)
-        self.store.update_interview(interview_id, status="completed", finished_at=utc_now())
-        self.store.add_event(interview_id, "interview.completed", {"overall_score": report["overall_score"]})
+        await self.store.save_report(interview_id, report)
+        await self.store.update_interview(interview_id, status="completed", finished_at=utc_now())
+        await self.store.add_event(interview_id, "interview.completed", {"overall_score": report["overall_score"]})
 
         from app.services import webhook
 
@@ -587,7 +590,7 @@ class InterviewService:
         except Exception as exc:  # noqa: BLE001
             safe_error = redact_secrets(str(exc)[:300])
             logger.warning("llm_task_degraded task=%s interview=%s error=%s", task, interview_id, safe_error)
-            self.store.add_event(
+            await self.store.add_event(
                 interview_id,
                 "interview.llm_degraded",
                 {"task": str(task), "error": safe_error},
@@ -649,26 +652,29 @@ class InterviewService:
         _restrict(target, 0o600)
         return str(target)
 
-    def delete_interview(self, interview_id: str) -> None:
+    async def delete_interview(self, interview_id: str) -> None:
         """Erase an interview: database rows and any stored audio."""
-        self.store.delete_interview(interview_id)
-        shutil.rmtree(self.settings.storage_dir / "audio" / interview_id, ignore_errors=True)
+        await self.store.delete_interview(interview_id)
+        await asyncio.to_thread(
+            shutil.rmtree, self.settings.storage_dir / "audio" / interview_id, ignore_errors=True
+        )
         logger.info("interview_deleted id=%s", interview_id)
 
-    def purge_expired(self) -> int:
+    async def purge_expired(self) -> int:
         days = self.settings.retention_days
         if days <= 0:
             return 0
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-        expired = self.store.list_expired_interview_ids(cutoff)
+        expired = await self.store.list_expired_interview_ids(cutoff)
         for interview_id in expired:
-            self.delete_interview(interview_id)
+            await self.delete_interview(interview_id)
         if expired:
             logger.info("retention_purge deleted=%d older_than_days=%d", len(expired), days)
         return len(expired)
 
-    def build_status(self, interview: dict[str, Any]) -> dict[str, Any]:
-        answers = self.store.list_answers(interview["id"])
+    async def build_status(self, interview: dict[str, Any], answered_count: int | None = None) -> dict[str, Any]:
+        if answered_count is None:
+            answered_count = await self.store.count_answers(interview["id"])
         questions = interview.get("questions") or []
         return {
             "id": interview["id"],
@@ -676,7 +682,7 @@ class InterviewService:
             "role": interview["role"],
             "candidate_name": interview.get("candidate_name"),
             "question_count": len(questions),
-            "answered_count": len(answers),
+            "answered_count": answered_count,
             "created_at": interview["created_at"],
             "updated_at": interview["updated_at"],
             "finished_at": interview.get("finished_at"),

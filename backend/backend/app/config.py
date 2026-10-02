@@ -60,6 +60,17 @@ class Settings(BaseSettings):
     storage_dir: Path = BASE_DIR / "data"
     database_path: Path = BASE_DIR / "data" / "interviews.db"
 
+    # Production database. When DATABASE_URL is set the service uses Postgres (for example Supabase's
+    # transaction pooler) and ignores DATABASE_PATH. Tables live in DB_SCHEMA, never in `public`.
+    database_url: str = ""
+    db_schema: str = "interviewer"
+    db_pool_size: int = 5
+    db_auto_migrate: bool = True  # create tables on startup; set false when an admin runs the SQL
+
+    # Shared rate-limit state (for example Upstash). Empty = per-process memory.
+    redis_url: str = ""
+    redis_key_prefix: str = "interviewer"
+
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com"
 
