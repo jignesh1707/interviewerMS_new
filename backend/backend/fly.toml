@@ -1,0 +1,56 @@
+# Fly.io config for the interviewer API. See docs/docs/DEPLOY_FLY_SUPABASE.md for secrets and setup.
+# Secrets (API_KEYS, DATABASE_URL, REDIS_URL, CORS_ORIGINS, WEBHOOK_SECRET, provider keys...) are set with
+# `fly secrets set`, never here.
+
+app = "interviewer-ms"
+# Pick the region closest to your Supabase project (every query is a network call). Change before deploying.
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+  HOST = "::"                # listen on IPv6 so Fly's private network (.internal / .flycast) can reach it
+  PLANS_ENABLED = "true"
+  REQUIRE_CONSENT = "true"
+
+# Private service: no [http_service], and deploy with `fly deploy --no-public-ips`, so nothing is reachable from the
+# internet. The main app calls it over Fly's private network (http://interviewer-ms.internal:8080, or .flycast after
+# `fly ips allocate-v6 --private`). If the main app is NOT in the same Fly org, replace this block with a public
+# [http_service] (force_https = true) and review CORS_ORIGINS and API_KEYS first.
+[[services]]
+  protocol = "tcp"
+  internal_port = 8080
+  auto_stop_machines = "off"     # interviews hold in-flight state; keep machines running
+  auto_start_machines = true
+  min_machines_running = 2
+
+  [services.concurrency]
+    type = "requests"
+    soft_limit = 20
+    hard_limit = 40
+
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+
+  [[services.http_checks]]
+    method = "GET"
+    path = "/api/v1/health"
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "30s"
+
+  [[services.http_checks]]
+    method = "GET"
+    path = "/api/v1/ready"
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "30s"
+
+# Whisper base (int8) plus the API need ~1 GB under load; 2 GB leaves headroom for concurrent transcriptions.
+[[vm]]
+  size = "shared-cpu-2x"
+  memory = "2gb"
+  cpus = 2
