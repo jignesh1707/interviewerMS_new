@@ -18,3 +18,14 @@ import pytest  # noqa: E402
 @pytest.fixture(scope="session")
 def test_dir() -> Path:
     return TEST_DIR
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limits():
+    from app.core.ratelimit import budget, limiter
+
+    limiter.reset()
+    budget.reset()
+    yield
+    limiter.reset()
+    budget.reset()

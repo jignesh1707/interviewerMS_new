@@ -23,6 +23,7 @@ class CreateInterviewRequest(BaseModel):
     resume_text: str | None = Field(default=None, max_length=200_000)
     jd_text: str | None = Field(default=None, max_length=200_000)
     callback_url: str | None = Field(default=None, max_length=2048)
+    consent_to_ai_processing: bool | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     config: InterviewConfig = Field(default_factory=InterviewConfig)
 

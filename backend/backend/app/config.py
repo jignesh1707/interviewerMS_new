@@ -24,11 +24,32 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     api_keys: str = DEFAULT_API_KEY
-    cors_origins: str = "*"
+    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
     # Callback (webhook) target policy. Empty allowlist = any public https host.
     callback_allowed_hosts: str = ""
     callback_allow_insecure: bool = False
+
+    # Rate limits (per tenant, in-process: use a gateway as well when running several workers).
+    rate_limit_per_minute: int = 120
+    rate_limit_expensive_per_minute: int = 20
+    daily_expensive_budget: int = 2000  # LLM/STT/TTS-backed calls per tenant per UTC day; 0 = unlimited
+    auth_fail_limit_per_minute: int = 10  # failed key attempts per client address
+
+    # Untrusted document parsing.
+    max_pdf_pages: int = 30
+    max_docx_uncompressed_mb: int = 20
+    doc_parse_timeout_seconds: float = 20.0
+
+    # Prompt-injection hardening: LLM scores may differ from the heuristic baseline by at most this.
+    score_clamp_delta: int = 25
+
+    # Candidate data handling.
+    retain_audio: bool = False  # keep uploaded audio after transcription
+    retention_days: int = 0  # purge interviews older than this many days; 0 = keep forever
+    retention_sweep_minutes: int = 60
+    llm_disabled_providers: str = ""  # e.g. "deepseek" to keep candidate data away from a vendor
+    require_consent: bool = False  # require consent_to_ai_processing=true when creating interviews
 
     # Request size limits.
     max_doc_upload_mb: int = 5
@@ -102,6 +123,10 @@ class Settings(BaseSettings):
     @property
     def api_key_set(self) -> set[str]:
         return set(self.api_key_entries)
+
+    @property
+    def disabled_provider_set(self) -> set[str]:
+        return {p.strip().lower() for p in self.llm_disabled_providers.split(",") if p.strip()}
 
     @property
     def callback_host_set(self) -> set[str]:

@@ -205,6 +205,28 @@ class Store:
         self._execute(f"UPDATE interviews SET {', '.join(assignments)} WHERE id = ?", tuple(values))
         return self.get_interview(interview_id)
 
+    def delete_interview(self, interview_id: str) -> list[str]:
+        """Delete an interview and everything attached to it. Returns stored audio paths."""
+        with self._lock:
+            paths = [
+                row["audio_path"]
+                for row in self._connection.execute(
+                    "SELECT audio_path FROM answers WHERE interview_id = ? AND audio_path IS NOT NULL",
+                    (interview_id,),
+                )
+            ]
+            for table in ("answers", "reports", "events"):
+                self._connection.execute(f"DELETE FROM {table} WHERE interview_id = ?", (interview_id,))
+            self._connection.execute("DELETE FROM interviews WHERE id = ?", (interview_id,))
+            self._connection.commit()
+        return paths
+
+    def list_expired_interview_ids(self, cutoff_iso: str, limit: int = 500) -> list[str]:
+        rows = self._query_all(
+            "SELECT id FROM interviews WHERE created_at < ? ORDER BY created_at LIMIT ?", (cutoff_iso, limit)
+        )
+        return [row["id"] for row in rows]
+
     def list_interviews(self, tenant_id: str, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
         rows = self._query_all(
             "SELECT * FROM interviews WHERE tenant_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",

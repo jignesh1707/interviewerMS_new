@@ -182,3 +182,12 @@ platform preview.
   `GET /api/v1/interviews/{id}/events`.
 - Scale horizontally only with a shared database or by pinning a session to one instance, since
   storage is local SQLite.
+
+## 9. Security and privacy controls
+
+- **Rate limits** are per tenant: `RATE_LIMIT_PER_MINUTE` for all calls, `RATE_LIMIT_EXPENSIVE_PER_MINUTE` plus a `DAILY_EXPENSIVE_BUDGET` for anything that runs an LLM, speech-to-text or TTS. Limits return 429 with `Retry-After`. Repeated bad keys from one address are locked out for a minute. Limits live in process memory, so also rate-limit at your gateway when running several workers.
+- **Documents** are validated (PDF/ZIP signature, page count, decompressed size), then parsed in a child process with a hard timeout.
+- **Prompt injection:** candidate text is fenced in `<untrusted_...>` blocks, the model is told to treat it as data, and LLM scores are bounded to the deterministic baseline plus or minus `SCORE_CLAMP_DELTA` (10 when injection phrasing is detected). Suspicious resumes, JDs and answers raise an `integrity.possible_prompt_injection` event and `metrics.integrity_flags`. Treat model scores as advisory, never as the only hiring signal.
+- **Erasure and retention:** `DELETE /api/v1/interviews/{id}` removes the interview, answers, report, events and any audio. Set `RETENTION_DAYS` to purge old interviews automatically. Audio is discarded after transcription unless `RETAIN_AUDIO=true`.
+- **Encryption at rest is not done in the app.** Run the service on an encrypted volume (data lives under the storage directory: SQLite file and optional audio).
+- **Third-party AI processing:** resumes, JDs and answers are sent to whichever of OpenAI, DeepSeek and Anthropic is configured. Use `LLM_DISABLED_PROVIDERS=deepseek` to exclude a vendor, and set `REQUIRE_CONSENT=true` so each interview must be created with `"consent_to_ai_processing": true` (recorded in the event log). Your privacy policy must cover this processing.

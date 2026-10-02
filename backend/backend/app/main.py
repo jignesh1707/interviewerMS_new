@@ -1,3 +1,6 @@
+import asyncio
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -12,7 +15,29 @@ configure_logging()
 logger = get_logger(__name__)
 settings = get_settings()
 
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    task = asyncio.create_task(_retention_loop()) if settings.retention_days > 0 else None
+    try:
+        yield
+    finally:
+        if task:
+            task.cancel()
+
+
+async def _retention_loop() -> None:
+    from app.services.interview_service import get_interview_service
+
+    while True:
+        try:
+            await asyncio.to_thread(get_interview_service().purge_expired)
+        except Exception:  # noqa: BLE001
+            logger.exception("retention_purge_failed")
+        await asyncio.sleep(max(1, settings.retention_sweep_minutes) * 60)
+
+
 app = FastAPI(
+    lifespan=lifespan,
     title="Voice Interviewer Microservice",
     version="0.1.0",
     description=(
@@ -26,15 +51,15 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
     allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["X-API-Key", "Authorization", "Content-Type"],
 )
 
 
 @app.exception_handler(AppError)
 async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
     logger.warning("app_error path=%s code=%s message=%s", request.url.path, exc.code, exc.message)
-    return JSONResponse(status_code=exc.status_code, content=exc.to_dict())
+    return JSONResponse(status_code=exc.status_code, content=exc.to_dict(), headers=exc.headers)
 
 
 @app.exception_handler(Exception)

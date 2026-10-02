@@ -165,6 +165,8 @@ class ModelRouter:
         }
 
     def provider_configured(self, name: str) -> bool:
+        if name in self.settings.disabled_provider_set:
+            return False
         provider = self._providers.get(name)
         return bool(provider and provider.configured)
 
@@ -423,8 +425,9 @@ class ModelRouter:
         for name, provider in self._providers.items():
             state = self.health(name)
             providers[name] = {
-                "configured": provider.configured,
-                "available": provider.configured and state.is_available(now),
+                "configured": self.provider_configured(name),
+                "disabled_by_policy": name in self.settings.disabled_provider_set,
+                "available": self.provider_configured(name) and state.is_available(now),
                 "consecutive_failures": state.consecutive_failures,
                 "disabled_for_seconds": max(0.0, round(state.disabled_until - now, 1)),
                 "last_error": state.last_error,

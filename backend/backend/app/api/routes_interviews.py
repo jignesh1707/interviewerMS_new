@@ -3,9 +3,9 @@ from typing import Annotated
 
 from pydantic import ValidationError
 
-from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, Response, UploadFile
 
-from app.api.deps import require_api_key
+from app.api.deps import expensive_call, require_api_key
 from app.config import get_settings
 from app.core.errors import ValidationAppError
 from app.core.limits import read_capped
@@ -26,7 +26,7 @@ Tenant = Annotated[str, Depends(require_api_key)]
 router = APIRouter(prefix="/interviews", tags=["interviews"], dependencies=[Depends(require_api_key)])
 
 
-@router.post("", response_model=CreateInterviewResponse, status_code=201)
+@router.post("", response_model=CreateInterviewResponse, status_code=201, dependencies=[Depends(expensive_call)])
 async def create_interview(payload: CreateInterviewRequest, tenant: Tenant) -> CreateInterviewResponse:
     service = get_interview_service()
     result = await service.create_interview(payload, tenant_id=tenant)
@@ -36,7 +36,7 @@ async def create_interview(payload: CreateInterviewRequest, tenant: Tenant) -> C
     )
 
 
-@router.post("/upload", response_model=CreateInterviewResponse, status_code=201)
+@router.post("/upload", response_model=CreateInterviewResponse, status_code=201, dependencies=[Depends(expensive_call)])
 async def create_interview_with_files(
     role: Annotated[str, Form()],
     tenant: Tenant,
@@ -44,6 +44,7 @@ async def create_interview_with_files(
     resume_text: Annotated[str | None, Form()] = None,
     jd_text: Annotated[str | None, Form()] = None,
     callback_url: Annotated[str | None, Form()] = None,
+    consent_to_ai_processing: Annotated[bool | None, Form()] = None,
     config_json: Annotated[str | None, Form()] = None,
     metadata_json: Annotated[str | None, Form()] = None,
     resume_file: Annotated[UploadFile | None, File()] = None,
@@ -58,6 +59,7 @@ async def create_interview_with_files(
             resume_text=resume_text,
             jd_text=jd_text,
             callback_url=callback_url,
+            consent_to_ai_processing=consent_to_ai_processing,
             metadata=metadata or {},
             config=config or {},
         )
@@ -118,7 +120,7 @@ async def get_answers(interview_id: str, tenant: Tenant) -> dict:
     return {"items": store.list_answers(interview_id)}
 
 
-@router.post("/{interview_id}/answers", response_model=AnswerResponse)
+@router.post("/{interview_id}/answers", response_model=AnswerResponse, dependencies=[Depends(expensive_call)])
 async def submit_text_answer(interview_id: str, tenant: Tenant, payload: AnswerTextRequest) -> AnswerResponse:
     get_store().get_interview_for_tenant(interview_id, tenant)
     service = get_interview_service()
@@ -132,7 +134,7 @@ async def submit_text_answer(interview_id: str, tenant: Tenant, payload: AnswerT
     return AnswerResponse(**result)
 
 
-@router.post("/{interview_id}/answers/audio", response_model=AnswerResponse)
+@router.post("/{interview_id}/answers/audio", response_model=AnswerResponse, dependencies=[Depends(expensive_call)])
 async def submit_audio_answer(
     interview_id: str,
     tenant: Tenant,
@@ -182,7 +184,7 @@ async def get_transcript(interview_id: str, tenant: Tenant) -> dict:
     }
 
 
-@router.post("/{interview_id}/finish", response_model=ReportResponse)
+@router.post("/{interview_id}/finish", response_model=ReportResponse, dependencies=[Depends(expensive_call)])
 async def finish_interview(interview_id: str, tenant: Tenant) -> ReportResponse:
     service = get_interview_service()
     store = get_store()
@@ -228,6 +230,14 @@ def _parse_json_form(raw: str | None, field: str) -> dict | None:
         raise ValidationAppError(f"{field} must be a JSON object")
     return value
 
+
+
+@router.delete("/{interview_id}", status_code=204)
+async def delete_interview(interview_id: str, tenant: Tenant) -> Response:
+    """Erase an interview and its transcripts, report, events and any stored audio."""
+    get_store().get_interview_for_tenant(interview_id, tenant)
+    get_interview_service().delete_interview(interview_id)
+    return Response(status_code=204)
 
 
 @router.get("/{interview_id}/status", response_model=InterviewStatus)

@@ -2,10 +2,14 @@ class AppError(Exception):
     status_code = 500
     code = "internal_error"
 
-    def __init__(self, message: str, *, details: dict | None = None) -> None:
+    headers: dict[str, str] | None = None
+
+    def __init__(self, message: str, *, details: dict | None = None, headers: dict[str, str] | None = None) -> None:
         super().__init__(message)
         self.message = message
         self.details = details or {}
+        if headers:
+            self.headers = headers
 
     def to_dict(self) -> dict:
         return {"error": {"code": self.code, "message": self.message, "details": self.details}}
@@ -24,6 +28,11 @@ class ValidationAppError(AppError):
 class PayloadTooLargeError(AppError):
     status_code = 413
     code = "payload_too_large"
+
+
+class RateLimitError(AppError):
+    status_code = 429
+    code = "rate_limited"
 
 
 class AuthError(AppError):

@@ -1,9 +1,11 @@
 from app.llm.providers.base import LLMMessage
+from app.prompts.guard import UNTRUSTED_NOTICE, untrusted
 
 SYSTEM = (
     "You are a senior technical interviewer and hiring manager. "
     "You design behavioural interviews using the STAR method (Situation, Task, Action, Result). "
     "You always return strict JSON and never wrap it in prose."
+    + UNTRUSTED_NOTICE
 )
 
 
@@ -20,13 +22,13 @@ def build_question_generation_messages(
 
 Candidate resume signals:
 - Skills: {", ".join(resume_summary.get("skill_list", [])[:30]) or "none detected"}
-- Titles: {", ".join(resume_summary.get("titles", [])) or "unknown"}
+- Titles: {untrusted("resume_titles", ", ".join(resume_summary.get("titles", [])) or "unknown")}
 - Years of experience: {resume_summary.get("years_experience")}
 - Quantified achievements: {"; ".join(resume_summary.get("achievements", [])[:8]) or "none detected"}
 
 Job description signals:
 - Required skills: {", ".join(jd_summary.get("skill_list", [])[:30]) or "none detected"}
-- Requirements: {"; ".join(jd_summary.get("requirements", [])[:8]) or "none detected"}
+- Requirements: {untrusted("jd_requirements", "; ".join(jd_summary.get("requirements", [])[:8]) or "none detected")}
 - Minimum years: {jd_summary.get("min_years")}
 
 Skill match analysis:
@@ -34,7 +36,7 @@ Skill match analysis:
 - Matched skills: {", ".join(match.get("matched", [])[:20]) or "none"}
 - Missing skills: {", ".join(match.get("missing", [])[:20]) or "none"}
 
-Priority focus areas: {", ".join(focus_areas) if focus_areas else "infer from the gaps above"}
+Priority focus areas: {untrusted("focus_areas", ", ".join(focus_areas)) if focus_areas else "infer from the gaps above"}
 
 Requirements:
 - Every question must require a STAR-structured answer and invite a concrete, quantified result.
@@ -61,7 +63,7 @@ def build_followup_messages(*, question: str, transcript: str, gaps: list[str]) 
     user = f"""Interview question: {question}
 
 Candidate answer transcript:
-{transcript[:4000]}
+{untrusted("candidate_answer", transcript, 4000)}
 
 Detected weaknesses: {", ".join(gaps) if gaps else "none"}
 
@@ -74,7 +76,7 @@ def build_resume_summary_messages(resume_text: str) -> list[LLMMessage]:
     user = f"""Summarise this resume into JSON for interview planning.
 
 Resume:
-{resume_text[:6000]}
+{untrusted("resume", resume_text, 6000)}
 
 Return JSON exactly:
 {{"headline": string, "seniority": string, "domains": [string], "top_strengths": [string], "possible_weaknesses": [string]}}"""
