@@ -380,17 +380,17 @@ async def test_retention_disabled_by_default():
 
 def test_disabled_provider_is_never_configured():
     settings = Settings(
-        deepseek_api_key="sk-deepseek-test-123456", openai_api_key="sk-proj-test-12345678",
-        llm_disabled_providers="deepseek",
+        openrouter_api_key="sk-or-test-123456", openai_api_key="sk-proj-test-12345678",
+        llm_disabled_providers="openrouter",
     )
     router = ModelRouter(settings=settings)
     assert router.provider_configured("openai") is True
-    assert router.provider_configured("deepseek") is False
-    status = router.status()["providers"]["deepseek"]
+    assert router.provider_configured("openrouter") is False
+    status = router.status()["providers"]["openrouter"]
     assert status["configured"] is False and status["disabled_by_policy"] is True
     ready, skipped = router._plan("standard", None)
-    assert all(candidate.provider != "deepseek" for candidate in ready)
-    assert any(item["provider"] == "deepseek" and item["reason"] == "not_configured" for item in skipped)
+    assert all(candidate.provider != "openrouter" for candidate in ready)
+    assert any(item["provider"] == "openrouter" and item["reason"] == "not_configured" for item in skipped)
 
 
 def test_consent_enforced_when_required(client, monkeypatch):

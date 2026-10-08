@@ -61,20 +61,23 @@ async def test_a_failing_model_is_reported_with_its_error_and_does_not_stop_the_
 
 
 @pytest.mark.asyncio
-async def test_the_economy_profile_is_the_default_and_covers_deepseek():
-    router, providers = build(deepseek=Provider("deepseek"))
+async def test_the_economy_profile_is_the_default_and_covers_gpt_6_luna():
+    router, providers = build(openrouter=Provider("openrouter"))
     results = await smoke(router)
     assert {r["profile"] for r in results} == {"economy"}
-    assert any(r["provider"] == "deepseek" and r["status"] == "ok" for r in results)
+    assert any(
+        r["provider"] == "openrouter" and r["model"] == "openai/gpt-6-luna" and r["status"] == "ok" for r in results
+    )
+    assert not any(r["provider"] == "deepseek" for r in results)
 
 
 @pytest.mark.asyncio
 async def test_disabled_providers_are_not_called():
-    router, providers = build(deepseek=Provider("deepseek"))
-    router.settings.llm_disabled_providers = "deepseek"
+    router, providers = build(openrouter=Provider("openrouter"))
+    router.settings.llm_disabled_providers = "openrouter"
     results = await smoke(router)
-    assert providers["deepseek"].calls == []
-    assert any(r["provider"] == "deepseek" and r["status"] == "skipped" for r in results)
+    assert providers["openrouter"].calls == []
+    assert any(r["provider"] == "openrouter" and r["status"] == "skipped" for r in results)
 
 
 @pytest.mark.asyncio

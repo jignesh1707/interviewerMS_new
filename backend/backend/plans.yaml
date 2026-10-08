@@ -27,15 +27,16 @@ profiles:
   25: {question_count: 12, max_followups: 3}
 
 plans:
-  economy:          # $10 a month
+  economy:          # $10 a month; OpenAI GPT-6 Luna (via OpenRouter), then OpenAI and Anthropic. Never DeepSeek.
     pack_minutes: 150
     pack_days: 30
     durations: [15, 20, 25]
     default_duration: 15
     llm_profile: economy
+    llm_allowed_providers: [openrouter, openai, anthropic]
     refund: {max_interviews_started: 1, max_minutes_used: 15, rule: any}
 
-  premium:          # $20 a month; US providers only (never DeepSeek)
+  premium:          # $20 a month; Anthropic, then OpenAI (never DeepSeek)
     pack_minutes: 250
     pack_days: 30
     durations: [15, 20, 25]

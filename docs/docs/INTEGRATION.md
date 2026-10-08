@@ -125,7 +125,7 @@ A student buys a **pack** of interview minutes that expires after a number of da
 
 | Plan | Pack | AI providers that may see the student's data |
 |---|---|---|
-| `economy` ($10) | 150 minutes, 30 days | DeepSeek first, then OpenRouter, OpenAI, Anthropic |
+| `economy` ($10) | 150 minutes, 30 days | OpenAI GPT-6 Luna through OpenRouter, then OpenAI, Anthropic. **Never DeepSeek.** |
 | `premium` ($20) | 250 minutes, 30 days | Anthropic, then OpenAI. **Never DeepSeek.** |
 
 ```yaml
@@ -192,7 +192,7 @@ The refund rule in `plans.yaml` is `rule: any`: refundable while **either** at m
 
 ### Which AI providers see student data
 
-- **Profiles.** `models.yaml` has an `economy` profile (the top-level `tiers`) and a `premium` profile, each with its own provider and model lists. Fallbacks never leave a profile, so a Premium interview cannot fall through to DeepSeek.
+- **Profiles.** `models.yaml` has an `economy` profile (the top-level `tiers`) and a `premium` profile, each with its own provider and model lists. Fallbacks never leave a profile, and neither shipped plan lists DeepSeek, so no interview can reach it.
 - **Hard allow-list.** A plan's `llm_allowed_providers` is passed with every AI call and the router refuses anything else, whatever `models.yaml` says. At startup the service **refuses to start** if a plan names a profile that does not exist, or its profile lists a provider the plan forbids.
 - **Data minimization.** Before a resume or an answer goes to an AI provider the service removes names, emails, phone numbers, links, addresses, ID numbers and work-authorization lines (OPT, H-1B, visa sponsorship, citizenship...). `REDACT_PII_FOR_LLM=true` (default). Only the copy for the provider is changed; stored text and analytics use the original. This is best-effort minimization, **not anonymization**: employers, schools and anything a student says aloud can still identify them.
 - **If you change providers, update the privacy policy and consent text in the main app.**
@@ -296,4 +296,4 @@ The dev server listens on loopback and proxies `/api`. Set `VITE_HOST` and `VITE
 - **Prompt injection:** candidate text is fenced in `<untrusted_...>` blocks, the model is told to treat it as data, and LLM scores are bounded to the deterministic baseline plus or minus `SCORE_CLAMP_DELTA` (10 when injection phrasing is detected). Suspicious resumes, JDs and answers raise an `integrity.possible_prompt_injection` event and `metrics.integrity_flags`. Treat model scores as advisory, never as the only hiring signal.
 - **Erasure and retention:** pass your own user id as `external_ref` when creating an interview, then `GET /api/v1/interviews?external_ref=<id>` lists a student's interviews and `DELETE /api/v1/interviews/by-ref/<id>` erases all of them. `DELETE /api/v1/interviews/{id}` removes the interview, answers, report, events and any audio. Set `RETENTION_DAYS` to purge old interviews automatically. Audio is discarded after transcription unless `RETAIN_AUDIO=true`.
 - **Encryption at rest is not done in the app.** On Supabase, data is encrypted at rest by the platform. With the SQLite fallback, use an encrypted volume. See `DEPLOY_FLY_SUPABASE.md` for the production setup.
-- **Third-party AI processing:** resumes, JDs and answers are sent to whichever of DeepSeek, OpenRouter (which forwards to an upstream host), OpenAI and Anthropic is configured. Use `LLM_DISABLED_PROVIDERS=deepseek` to exclude a vendor, and set `REQUIRE_CONSENT=true` so each interview must be created with `"consent_to_ai_processing": true` (recorded in the event log). Your privacy policy must cover this processing.
+- **Third-party AI processing:** resumes, JDs and answers are sent to whichever of OpenRouter (which forwards GPT-6 Luna to OpenAI), OpenAI and Anthropic is configured for the student's plan (the DeepSeek client is still in the code but no shipped plan uses it). Use `LLM_DISABLED_PROVIDERS=openrouter` (or another provider) to exclude a vendor, and set `REQUIRE_CONSENT=true` so each interview must be created with `"consent_to_ai_processing": true` (recorded in the event log). Your privacy policy must cover this processing.

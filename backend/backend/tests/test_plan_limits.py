@@ -404,7 +404,7 @@ def test_economy_interviews_use_the_economy_profile_for_every_ai_call(client):
     calls = client.fake_router.calls
     assert {c["task"] for c in calls} >= {"question_generation", "answer_analysis", "final_scoring", "report_narrative"}
     assert all(c["profile"] == "economy" for c in calls)
-    assert all(c["authorized_providers"] is None for c in calls)  # no extra restriction: DeepSeek first, as configured
+    assert all(c["authorized_providers"] is None for c in calls)  # no extra restriction: GPT-6 Luna first, as configured
 
 
 def test_premium_interviews_use_the_premium_profile_and_us_providers_only_for_every_ai_call(client):
@@ -463,7 +463,7 @@ def test_the_catalog_lists_each_plan_with_its_pack_and_the_ai_providers_it_may_u
     assert premium["refund"] == {"max_interviews_started": 1, "max_minutes_used": 15, "rule": "any"}
     # these are the companies that may see a student's data on each plan: it is what a consent screen must name
     assert set(premium["llm_providers"]) == {"anthropic", "openai"}
-    assert "deepseek" in by_name["economy"]["llm_providers"]
+    assert set(by_name["economy"]["llm_providers"]) == {"openrouter", "openai", "anthropic"}
     assert "deepseek" not in premium["llm_providers"]
 
 
