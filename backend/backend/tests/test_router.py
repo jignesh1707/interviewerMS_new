@@ -15,7 +15,7 @@ class FakeProvider:
         self.auth_error = auth_error
         self.calls = 0
 
-    async def complete(self, messages, model, temperature, max_tokens):
+    async def complete(self, messages, model, temperature, max_tokens, options=None):
         self.calls += 1
         if self.fail:
             raise ProviderCallError(

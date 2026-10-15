@@ -48,6 +48,7 @@ class OpenAICompatibleClient:
         model: str,
         temperature: float,
         max_tokens: int,
+        options: dict[str, Any] | None = None,
     ) -> ProviderResponse:
         require_boundary_permit()
         if not self.configured:
@@ -62,6 +63,10 @@ class OpenAICompatibleClient:
             "stream": False,
             **self.extra_body,
         }
+        # Per-model request fields from models.yaml (for example reasoning_effort). The core fields stay fixed.
+        for key, value in ((options or {}).get("body") or {}).items():
+            if key not in {"model", "messages", "stream"}:
+                payload[key] = value
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
