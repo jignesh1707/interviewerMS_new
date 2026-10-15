@@ -1,8 +1,9 @@
 # Prompt for the resumetojob session: integrate the Interviewer service
 
 Paste everything below the line into a Claude session whose working directory is the **resumetojob repo**
-(`projects/resumeto/`). If that session can also read the Interviewer repo, point it at `docs/docs/INTEGRATION.md`
-and `docs/docs/DATA_HANDLING.md` there; otherwise attach those two files. The contract is repeated below so the
+(`projects/resumeto/`). If that session can also read the Interviewer repo, point it at `docs/docs/INTEGRATION.md`,
+`docs/docs/DATA_HANDLING.md` and `docs/docs/openapi.json` (the exact request and response schemas, kept in sync by a test)
+there; otherwise attach those three files. Build the client and the fake service from `openapi.json`, not from this prompt. The contract is repeated below so the
 session can start without them.
 
 ---
@@ -33,15 +34,24 @@ right. If a fact you need is not in the repo and not in this prompt, list it as 
   matching. Document that in the code next to the helper. This repo already has a similar pattern in
   `core/tailoring_client.py` (`user_id_hash`); reuse its style and, if sensible, its helper.
 
-### Plans (from `GET /api/v1/plans`; read it at runtime, do not hard-code)
+### Wallets (a "plan" in the service is a wallet; read `GET /api/v1/plans` at runtime, do not hard-code)
 
-| Plan | Pack | Notes |
+A student can hold several wallets at once, and `GET /packs/{external_ref}` returns **all of them in one response**
+(one entry per plan, active or not, with `minutes_remaining`, `days_remaining`, `refund_eligible` and
+`allowed_durations`). **Always send `plan` on create**: if it is omitted the service falls back to `economy`.
+
+| Wallet (`plan`) | Lengths | How it is filled |
 |---|---|---|
-| `economy` | 150 minutes, 30 days, lengths 15/20/25 | price $10 |
-| `premium` | 250 minutes, 30 days, lengths 15/20/25 | price $20 |
-| `included_weekly` | 30 minutes, 14 days, length 15 only (two interviews) | **not sold**: granted with the weekly subscription |
-| `included_monthly` | 75 minutes, 35 days, length 15 only (five interviews) | **not sold**: granted with the monthly subscription |
-| `included_quarterly` | 270 minutes, 100 days, length 15 only (eighteen interviews) | **not sold**: granted with the quarterly subscription |
+| `included_weekly` | 15 only | 30 min per paid weekly invoice (2 interviews), pack valid 14 days |
+| `included_monthly` | 15 only | 75 min per paid monthly invoice (5 interviews), pack valid 35 days |
+| `included_quarterly` | 15 only | 270 min per paid quarterly invoice (18 interviews), pack valid 100 days |
+| `economy` | 15 / 20 / 25 | add-on purchases (skus below), valid 30 days each, Economy models |
+| `premium` | 15 / 20 / 25 | add-on purchases (skus below), valid 30 days each, Anthropic first |
+
+`economy` and `premium` are **wallets, not products**: nobody buys a plan named `economy` or `premium` any more, and
+there is no "$10 / 150 minutes" or "$20 / 250 minutes" product. Only the skus below are sold. A student who asks for a
+25-minute interview cannot use an included wallet (the service answers 422 "interview length is not available on this
+plan"), so the app must pick a wallet that allows the length, for example a bought `economy` wallet, or tell the student.
 
 Add-ons the student buys on top (Stripe one-time payments), activated with a **`sku`**, not a plan. Read the list from
 `GET /plans` (`skus`), do not hard-code the numbers:
@@ -98,6 +108,10 @@ with `/packs/revoke` using that purchase's `plan` and `payment_id`.
 - **Timeouts**: the service makes AI calls that usually take 4–30 s and occasionally more. Create can take up to
   ~90 s and an answer up to ~60 s in bad cases. Use **at least 120 s** for create / answer calls and show a
   "thinking…" state. Never use a 60 s timeout.
+- **`POST /interviews` has no idempotency key**: two clicks on "Start" book two interviews and debit two. Guard in the app
+  (a button lock plus a server-side rule such as one active interview per student at a time, checked in a transaction).
+- The service limits all AI-backed calls per tenant (currently 300 a minute and 20,000 a day, shared by every student):
+  expect and handle 429.
 - `finish` must accept **both** 200 and 202. A second `finish` while processing is safe (no second build).
 
 ### Webhooks from the service to resumetojob
@@ -138,6 +152,10 @@ with `/packs/revoke` using that purchase's `plan` and `payment_id`.
    **Weekly** subscribers get `included_weekly` (2 interviews) and **quarterly** subscribers get `included_quarterly`
    (18 interviews), under exactly the same rules. When a student switches billing period, expire the old plan when its
    subscription ends and grant the new one on its first paid invoice.
+   **When the subscription ends, call `/packs/expire` for ALL THREE included plans** (it is a harmless no-op for the ones the
+   student never had). **A switch between billing periods on the same Stripe subscription** (weekly to monthly through the
+   Portal fires no `deleted` event): grant the new plan on its first paid invoice and let the old included wallet run out
+   on its own date; do not expire it on the switch, so a student does not lose paid-for interviews by changing plan.
    **Add-ons never expire with the subscription**: a student keeps a bought $5/$10/$20 wallet for its 30 days. Show
    every wallet (included and bought) and let the app spend the included one first; the student can also choose.
 

@@ -121,12 +121,12 @@ Write your client to accept both: if the response has a `report`, use it, otherw
 
 Off by default. Set `PLANS_ENABLED=true` and edit `backend/plans.yaml` and `backend/models.yaml` (no code change; restart to apply).
 
-A student buys a **pack** of interview minutes that expires after a number of days. The main app tells this service about each payment; **this service owns the balance, the days left and the refund rule**. There are two plans in the shipped config:
+A student gets a **pack** of interview minutes that expires after a number of days: included with a subscription, or bought as an add-on (see the skus below). `economy` and `premium` are wallets that add-ons fill; they are not sold as products by themselves. The main app tells this service about each payment; **this service owns the balance, the days left and the refund rule**. There are two plans in the shipped config:
 
 | Plan | Pack | AI providers that may see the student's data |
 |---|---|---|
-| `economy` ($10) | 150 minutes, 30 days | OpenAI GPT-6 Luna through OpenRouter, then OpenAI, Anthropic. **Never DeepSeek.** |
-| `premium` ($20) | 250 minutes, 30 days | Anthropic, then OpenAI. **Never DeepSeek.** |
+| `economy` (add-on wallet) | sold through skus; 150 minutes, 30 days when activated as a plan | OpenAI GPT-6 Luna through OpenRouter, then OpenAI, Anthropic. **Never DeepSeek.** |
+| `premium` (add-on wallet) | sold through skus; 250 minutes, 30 days when activated as a plan | Anthropic, then OpenAI. **Never DeepSeek.** |
 | `included_monthly` (with the monthly subscription) | 75 minutes, 35 days, 15-minute interviews only | Same as `economy`. See below. |
 
 ```yaml
