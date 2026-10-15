@@ -211,7 +211,42 @@ interviews**, 35 days, Economy models. It is meant to be granted with a paid mon
   on purpose, so it always succeeds and removes that month's minutes; the decision to refund is yours.
 - **Two balances:** a student who also bought an `economy` pack has two separate wallets. Spend the included one first
   in your app and show both.
-- Other billing periods (weekly, quarterly) need their own plan entries; none is shipped.
+- **Weekly and quarterly subscriptions** have their own plans, granted exactly the same way (paid invoice id, expire when
+  the subscription ends): `included_weekly` (2 interviews = 30 minutes, 14 days) and `included_quarterly` (18 interviews =
+  270 minutes, 100 days). If a student changes from one billing period to another, expire the old plan when its
+  subscription ends and grant the new one on its first paid invoice.
+
+### Add-ons of different sizes (`sku`)
+
+Packs the student buys on top of a subscription come in several sizes, so a purchase names a **`sku`** instead of a
+plan. The size and validity come from the `skus` section of `plans.yaml`, so the main app never sends a number of
+minutes. Send exactly one of `plan` or `sku`.
+
+| sku | Wallet | Minutes | Days | What it is |
+|---|---|---|---|---|
+| `addon_5` ($5) | `economy` | 150 | 30 | 10 interviews of 15 minutes |
+| `addon_10_economy` ($10) | `economy` | 300 | 30 | 20 interviews of 15 minutes |
+| `addon_10_premium` ($10) | `premium` | 75 | 30 | 5 interviews of 15 minutes with Anthropic |
+| `addon_20_economy` ($20) | `economy` | 650 | 30 | any mix of 15/20/25 minute interviews |
+| `addon_20_premium` ($20) | `premium` | 250 | 30 | 10 interviews of 25 minutes with Anthropic |
+
+```bash
+curl -sX POST http://localhost:8080/api/v1/packs/activate -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"external_ref": "STUDENT_HASH", "sku": "addon_5", "payment_id": "pi_3Abc", "purchased_at": "2026-10-02T12:00:00Z"}'
+```
+
+- **One purchase is one sku and one payment.** The $10 and $20 add-ons each come in an Economy and a Premium version;
+  the student picks one at checkout and you activate that sku, with the Stripe payment's id as `payment_id`. There is no
+  bundle: nobody gets two wallets from one payment.
+- Several skus fill one wallet and **stack** (minutes added, expiry pushed back), whatever their sizes. A student can
+  also hold an Economy and a Premium wallet at the same time (two separate purchases).
+- **Refund:** `/packs/revoke` with that purchase's `plan` and `payment_id`. It removes only that purchase's minutes and days.
+- `refund_eligible` is per wallet, not per purchase: it looks at everything the student has used from that wallet.
+- Interviews are booked in whole lengths from a wallet. "10 interviews of 15 minutes" is 150 minutes; the wallet also
+  allows 20 and 25 minute interviews, so a student can spend the same minutes as fewer, longer interviews.
+- Add-on wallets are valid for the days of the sku and are **not** affected by `/packs/expire` of an included plan: a
+  student keeps what they bought when the subscription ends.
+- `GET /plans` lists the skus (`name`, `plan`, `minutes`, `days`) next to the plans.
 
 The refund rule in `plans.yaml` is `rule: any`: refundable while **either** at most `max_interviews_started` interview has been started **or** at most `max_minutes_used` booked minutes are used. `rule: all` needs both. Used minutes are the booked length, not the time actually spoken.
 

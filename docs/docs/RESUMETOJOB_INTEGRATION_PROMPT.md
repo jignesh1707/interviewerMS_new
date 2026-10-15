@@ -39,7 +39,24 @@ right. If a fact you need is not in the repo and not in this prompt, list it as 
 |---|---|---|
 | `economy` | 150 minutes, 30 days, lengths 15/20/25 | price $10 |
 | `premium` | 250 minutes, 30 days, lengths 15/20/25 | price $20 |
-| `included_monthly` | 75 minutes, 35 days, length 15 only (five interviews) | **not sold**: granted with the $29.99 monthly subscription |
+| `included_weekly` | 30 minutes, 14 days, length 15 only (two interviews) | **not sold**: granted with the weekly subscription |
+| `included_monthly` | 75 minutes, 35 days, length 15 only (five interviews) | **not sold**: granted with the monthly subscription |
+| `included_quarterly` | 270 minutes, 100 days, length 15 only (eighteen interviews) | **not sold**: granted with the quarterly subscription |
+
+Add-ons the student buys on top (Stripe one-time payments), activated with a **`sku`**, not a plan. Read the list from
+`GET /plans` (`skus`), do not hard-code the numbers:
+
+| Add-on | sku to activate | Result |
+|---|---|---|
+| $5 | `addon_5` | 150 Economy minutes (10 interviews of 15) |
+| $10 Economy | `addon_10_economy` | 300 Economy minutes (20 x 15) |
+| $10 Premium | `addon_10_premium` | 75 Premium minutes (5 x 15, Anthropic) |
+| $20 Economy | `addon_20_economy` | 650 Economy minutes (any length) |
+| $20 Premium | `addon_20_premium` | 250 Premium minutes (10 x 25, Anthropic) |
+
+Each purchase is **one sku and one payment** (`payment_id` = the Stripe PaymentIntent id). The $10 and $20 add-ons come in
+an Economy and a Premium version and the student picks one at checkout; nobody gets two wallets from one payment. Refund
+with `/packs/revoke` using that purchase's `plan` and `payment_id`.
 
 - Prices live in Stripe and in resumetojob, **not** in the service. The service only knows plan names.
 - Buying again while a pack is active **stacks** (minutes added, expiry pushed back). Buying after expiry or
@@ -54,7 +71,7 @@ right. If a fact you need is not in the repo and not in this prompt, list it as 
 | Purpose | Call |
 |---|---|
 | Plan catalog + which AI companies see data | `GET /plans` |
-| Student paid | `POST /packs/activate` `{external_ref, plan, payment_id, purchased_at}` (idempotent on `payment_id`; replay returns `applied:false`) |
+| Student paid | `POST /packs/activate` `{external_ref, plan OR sku, payment_id, purchased_at}` (send exactly one of `plan`/`sku`; idempotent on `payment_id`; replay returns `applied:false`) |
 | Balance / refund eligibility | `GET /packs/{external_ref}` |
 | Refund | `POST /packs/revoke` `{external_ref, plan, payment_id}` (409 `refund_not_allowed` = do NOT refund) |
 | Subscription ended | `POST /packs/expire` `{external_ref, plan}` (ends the pack now, minutes gone, not a refund, idempotent, `expired:false` if there was no pack) |
@@ -118,7 +135,11 @@ right. If a fact you need is not in the repo and not in this prompt, list it as 
    `/packs/revoke` with the invoice id first (it always succeeds for this plan). Show the student "N interviews left"
    as `floor(minutes_remaining / 15)` and spend the included wallet before any bought `economy` pack. This changes
    `CLAUDE.md` section 11 (voice interview "never bundled"): update that sentence in the repo as part of Phase 1.
-   Weekly and quarterly subscribers get nothing until I decide; list them as an open question in your plan.
+   **Weekly** subscribers get `included_weekly` (2 interviews) and **quarterly** subscribers get `included_quarterly`
+   (18 interviews), under exactly the same rules. When a student switches billing period, expire the old plan when its
+   subscription ends and grant the new one on its first paid invoice.
+   **Add-ons never expire with the subscription**: a student keeps a bought $5/$10/$20 wallet for its 30 days. Show
+   every wallet (included and bought) and let the app spend the included one first; the student can also choose.
 
 1. Two plans for sale, Economy $10 and Premium $20, 30-day packs, separate from existing plans. Stacking and refund rule are
    in the service.

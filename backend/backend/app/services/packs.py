@@ -146,9 +146,24 @@ class PackService:
     # ------------------------------------------------------------------ purchases and refunds
 
     async def activate(
-        self, tenant_id: str, external_ref: str, plan_name: str, *, payment_id: str, purchased_at: datetime
+        self,
+        tenant_id: str,
+        external_ref: str,
+        plan_name: str | None = None,
+        *,
+        sku: str | None = None,
+        payment_id: str,
+        purchased_at: datetime,
     ) -> dict[str, Any]:
-        plan = self.plans.plan(plan_name)
+        """Record a purchase. Name a ``sku`` (a product with its own size) or a ``plan`` (the plan's default pack)."""
+        if (plan_name is None) == (sku is None):
+            raise ValidationAppError("send exactly one of plan or sku")
+        if sku is not None:
+            product = self.plans.sku(sku)
+            plan_name, minutes, days = product.plan, product.minutes, product.days
+        else:
+            plan = self.plans.plan(plan_name)
+            minutes, days = plan.pack_minutes, plan.pack_days
         if purchased_at.tzinfo is None:
             raise ValidationAppError("purchased_at must include a timezone (use UTC, e.g. 2026-10-02T12:00:00Z)")
         purchased = int(purchased_at.timestamp())
@@ -159,8 +174,8 @@ class PackService:
             external_ref,
             plan_name,
             payment_id=payment_id,
-            minutes=plan.pack_minutes,
-            days=plan.pack_days,
+            minutes=minutes,
+            days=days,
             purchased_at=purchased,
         )
         return {"applied": applied, "pack": await self.status(tenant_id, external_ref, plan_name)}

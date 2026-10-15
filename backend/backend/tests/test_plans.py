@@ -118,3 +118,54 @@ def test_shipped_plans_file_matches_the_two_offers():
     assert set(economy.llm_allowed_providers) == {"openrouter", "openai", "anthropic"}
     assert set(premium.llm_allowed_providers) == {"anthropic", "openai"}
     assert isinstance(config, PlansConfig)
+
+
+SKU_YAML = PLANS_YAML + """
+skus:
+  small: {plan: economy, minutes: 30, days: 10}
+  big: {plan: economy, minutes: 90, days: 45}
+"""
+
+
+def test_skus_load_with_their_wallet_size_and_validity(tmp_path):
+    config = load_plans(_write(tmp_path, SKU_YAML))
+    assert config.sku("big").plan == "economy"
+    assert (config.sku("big").minutes, config.sku("big").days) == (90, 45)
+    assert load_plans(_write(tmp_path)).skus == {}  # a file without skus still loads
+
+
+def test_unknown_sku_is_a_validation_error_listing_the_choices(tmp_path):
+    config = load_plans(_write(tmp_path, SKU_YAML))
+    with pytest.raises(ValidationAppError) as error:
+        config.sku("platinum")
+    assert error.value.details["allowed"] == ["big", "small"]
+
+
+def test_a_sku_for_an_undefined_plan_is_rejected_at_load(tmp_path):
+    with pytest.raises(ValueError):
+        load_plans(_write(tmp_path, PLANS_YAML + "skus:\n  x: {plan: gold, minutes: 30, days: 5}\n"))
+
+
+def test_a_sku_smaller_than_one_interview_is_rejected_at_load(tmp_path):
+    with pytest.raises(ValueError):
+        load_plans(_write(tmp_path, PLANS_YAML + "skus:\n  x: {plan: economy, minutes: 10, days: 5}\n"))
+
+
+def test_shipped_subscription_and_addon_offers():
+    """The shipped plans.yaml: what each subscription includes and what each add-on sells."""
+    from app.config import BASE_DIR
+
+    config = load_plans(BASE_DIR / "plans.yaml")
+    included = {name: (config.plan(name).pack_minutes // 15, config.plan(name).pack_days)
+                for name in ("included_weekly", "included_monthly", "included_quarterly")}
+    assert included == {"included_weekly": (2, 14), "included_monthly": (5, 35), "included_quarterly": (18, 100)}
+    for name in included:
+        assert config.plan(name).durations == [15]  # whole 15-minute interviews only
+        assert set(config.plan(name).llm_allowed_providers) == {"openrouter", "openai", "anthropic"}
+    assert {name: (sku.plan, sku.minutes, sku.days) for name, sku in config.skus.items()} == {
+        "addon_5": ("economy", 150, 30),  # 10 x 15 minutes
+        "addon_10_economy": ("economy", 300, 30),  # 20 x 15 minutes
+        "addon_10_premium": ("premium", 75, 30),  # 5 x 15 minutes with Anthropic
+        "addon_20_economy": ("economy", 650, 30),
+        "addon_20_premium": ("premium", 250, 30),  # 10 x 25 minutes with Anthropic
+    }

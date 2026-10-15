@@ -41,6 +41,10 @@ plans:
     default_duration: 15
     llm_profile: economy
     refund: {max_interviews_started: 1, max_minutes_used: 15, rule: all}
+skus:
+  small: {plan: economy, minutes: 30, days: 10}
+  big: {plan: economy, minutes: 90, days: 45}
+  prem: {plan: premium, minutes: 60, days: 20}
 """
 
 ANSWER = (
@@ -659,3 +663,86 @@ def test_a_student_who_resubscribes_after_expiry_starts_from_a_fresh_pack(client
 def test_expire_rejects_an_unknown_plan_and_needs_an_api_key(client):
     expire(client, plan="platinum", expect=422)
     assert client.post("/api/v1/packs/expire", json={}).status_code == 401
+
+
+# ----------------------------------------------------------------------------- skus (add-on products of different sizes)
+
+
+def buy_sku(client, sku, ref="stu-1", payment_id=None, expect=200):
+    response = client.post(
+        "/api/v1/packs/activate",
+        json={"external_ref": ref, "sku": sku, "payment_id": payment_id or f"pay-{sku}", "purchased_at": now_iso()},
+        headers=HEADERS,
+    )
+    assert response.status_code == expect, response.text
+    return response.json()
+
+
+def wallets(client, ref="stu-1"):
+    packs = client.get(f"/api/v1/packs/{ref}", headers=HEADERS).json()["packs"]
+    return {item["plan"]: item for item in packs}
+
+
+def test_a_sku_grants_its_own_size_and_validity_not_the_plans_default(client):
+    body = buy_sku(client, "big")
+    assert body["applied"] is True
+    assert body["pack"]["plan"] == "economy"
+    assert body["pack"]["minutes_remaining"] == 90  # the plan itself would give 30
+    assert body["pack"]["days_remaining"] in (44, 45)
+
+
+def test_skus_of_different_sizes_stack_in_the_same_wallet(client):
+    buy_sku(client, "small", payment_id="p1")
+    buy_sku(client, "big", payment_id="p2")
+    economy = wallets(client)["economy"]
+    assert economy["minutes_remaining"] == 120  # 30 + 90
+    assert economy["days_remaining"] in (54, 55)  # 10 + 45 days: the second purchase pushes the expiry back
+
+
+def test_a_replayed_sku_payment_is_applied_once(client):
+    buy_sku(client, "big", payment_id="p1")
+    assert buy_sku(client, "big", payment_id="p1")["applied"] is False
+    assert wallets(client)["economy"]["minutes_remaining"] == 90
+
+
+def test_a_student_can_hold_an_economy_and_a_premium_wallet_and_refund_each_separately(client):
+    # two purchases (an Economy add-on and a Premium add-on), each its own payment and its own wallet
+    buy_sku(client, "big", payment_id="pi_1")
+    buy_sku(client, "prem", payment_id="pi_2")
+    held = wallets(client)
+    assert held["economy"]["minutes_remaining"] == 90 and held["premium"]["minutes_remaining"] == 60
+    assert revoke(client, plan="economy", payment_id="pi_1")["revoked"] is True
+    assert wallets(client)["premium"]["minutes_remaining"] == 60  # the other wallet is untouched
+    assert revoke(client, plan="premium", payment_id="pi_2")["revoked"] is True
+    held = wallets(client)
+    assert held["economy"]["minutes_remaining"] == 0 and held["premium"]["minutes_remaining"] == 0
+
+
+def test_revoking_one_sku_purchase_leaves_the_other_purchases_in_the_wallet(client):
+    buy_sku(client, "small", payment_id="p1")
+    buy_sku(client, "big", payment_id="p2")
+    revoke(client, payment_id="p1")  # nothing used yet, so the refund rule allows it
+    assert wallets(client)["economy"]["minutes_remaining"] == 90
+
+
+def test_activate_needs_exactly_one_of_plan_or_sku(client):
+    base = {"external_ref": "stu-1", "payment_id": "p1", "purchased_at": now_iso()}
+    for extra in ({}, {"plan": "economy", "sku": "big"}):
+        response = client.post("/api/v1/packs/activate", json={**base, **extra}, headers=HEADERS)
+        assert response.status_code == 422, extra
+    buy_sku(client, "platinum", expect=422)
+
+
+def test_plans_listing_includes_the_skus(client):
+    listing = client.get("/api/v1/plans", headers=HEADERS).json()
+    assert {s["name"]: (s["plan"], s["minutes"], s["days"]) for s in listing["skus"]} == {
+        "small": ("economy", 30, 10), "big": ("economy", 90, 45), "prem": ("premium", 60, 20),
+    }
+
+
+def test_a_sku_wallet_can_be_booked_and_expired_like_any_other(client):
+    buy_sku(client, "big")
+    create(client, paid=False)  # books 15 of the 90 minutes
+    assert wallets(client)["economy"]["minutes_remaining"] == 75
+    expire(client)
+    create(client, paid=False, expect=402)
