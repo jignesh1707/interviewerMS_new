@@ -269,7 +269,7 @@ The refund rule in `plans.yaml` is `rule: any`: refundable while **either** at m
 
 **Per-student rate limits** (independent of `PLANS_ENABLED`): once an interview has an `external_ref`, its LLM and speech-backed calls (create, answer, audio answer, finish) also count against that student: `STUDENT_RATE_LIMIT_PER_MINUTE` (30) and `STUDENT_DAILY_BUDGET` (200 per UTC day), `0` to turn either off. They are kept per tenant and student, shared across machines through Redis, and return 429 like the tenant limits. The standalone `/speech/transcribe` and `/speech/synthesize` calls carry no student id, so only the tenant limits cover them.
 
-Pack rows are keyed by `external_ref` and are not removed by the erase-by-user endpoint, so erasing a student's interviews does not reset or refund their balance.
+Pack rows are keyed by `external_ref` and are not removed by the interview erase endpoint, so erasing a student's interviews does not reset or refund their balance. **When the student's account is deleted**, also call `DELETE /api/v1/packs/by-ref/{external_ref}` (after cancelling their subscription): it removes every wallet and purchase record, cannot be undone, and is safe to repeat (`{"deleted_wallets": N, "deleted_payments": M}`). Call it only when the account is really gone; a replayed old payment would otherwise be applied again.
 
 ## 5. Webhooks
 

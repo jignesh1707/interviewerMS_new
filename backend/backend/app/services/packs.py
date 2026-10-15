@@ -180,6 +180,10 @@ class PackService:
         )
         return {"applied": applied, "pack": await self.status(tenant_id, external_ref, plan_name)}
 
+    async def erase(self, tenant_id: str, external_ref: str) -> dict[str, int]:
+        """Remove every wallet and purchase record of a student whose account was deleted. Idempotent."""
+        return await self.store.packs_erase(tenant_id, external_ref)
+
     async def expire(self, tenant_id: str, external_ref: str, plan_name: str) -> dict[str, Any]:
         """End a student's pack now, for example when the subscription that included it ended. Idempotent."""
         self.plans.plan(plan_name)  # an unknown plan is a validation error, as for activate and revoke

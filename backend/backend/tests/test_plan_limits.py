@@ -746,3 +746,34 @@ def test_a_sku_wallet_can_be_booked_and_expired_like_any_other(client):
     assert wallets(client)["economy"]["minutes_remaining"] == 75
     expire(client)
     create(client, paid=False, expect=402)
+
+
+# ----------------------------------------------------------------------------- erasing wallets (account deleted)
+
+
+def erase_packs(client, ref="stu-1", expect=200):
+    response = client.delete(f"/api/v1/packs/by-ref/{ref}", headers=HEADERS)
+    assert response.status_code == expect, response.text
+    return response.json()
+
+
+def test_erasing_a_student_removes_all_wallets_and_the_balance_is_gone(client):
+    buy_sku(client, "big", payment_id="p1")
+    buy_sku(client, "prem", payment_id="p2")
+    assert erase_packs(client) == {"deleted_wallets": 2, "deleted_payments": 2}
+    held = wallets(client)
+    assert all(item["active"] is False and item["minutes_remaining"] == 0 for item in held.values())
+    create(client, paid=False, expect=402)
+
+
+def test_erasing_twice_or_a_stranger_is_a_harmless_no_op_and_others_keep_their_wallets(client):
+    buy_sku(client, "big", ref="stu-1", payment_id="p1")
+    buy_sku(client, "big", ref="stu-2", payment_id="p2")
+    erase_packs(client, ref="stu-1")
+    assert erase_packs(client, ref="stu-1") == {"deleted_wallets": 0, "deleted_payments": 0}
+    assert erase_packs(client, ref="nobody") == {"deleted_wallets": 0, "deleted_payments": 0}
+    assert wallets(client, ref="stu-2")["economy"]["minutes_remaining"] == 90
+
+
+def test_erasing_packs_needs_an_api_key(client):
+    assert client.delete("/api/v1/packs/by-ref/stu-1").status_code == 401

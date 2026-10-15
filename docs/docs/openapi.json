@@ -2353,6 +2353,85 @@
         ]
       }
     },
+    "/api/v1/packs/by-ref/{external_ref}": {
+      "delete": {
+        "description": "Delete a student's wallets and purchase records (call it when the account is deleted). Safe to repeat.\n\nThis is not a refund and cannot be undone: the balance is gone. Interviews are erased separately with\n`DELETE /interviews/by-ref/{external_ref}`.",
+        "operationId": "erase_packs_api_v1_packs_by_ref__external_ref__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "external_ref",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "External Ref",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-API-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Erase Packs Api V1 Packs By Ref  External Ref  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Erase Packs",
+        "tags": [
+          "packs"
+        ]
+      }
+    },
     "/api/v1/packs/expire": {
       "post": {
         "description": "End a student's pack now (the subscription that included it ended). Not a refund; safe to repeat.\n\nThe minutes left are gone for good: a later purchase starts a fresh pack. A student with no pack gets a harmless\n`expired: false`, so you can call this on every cancellation without checking first.",

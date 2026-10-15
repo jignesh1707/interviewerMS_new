@@ -97,14 +97,18 @@ their own reports, which can be referenced.
 ## 7. Retention and deletion
 
 - **Audio:** discarded after transcription (`RETAIN_AUDIO=false`).
-- **Interviews, answers, reports, events:** kept forever unless `RETENTION_DAYS` is set. **Set a value before going
-  live.** A background sweep deletes older interviews hourly.
+- **Interviews, answers, reports, events:** deleted **90 days** after the interview was created (`RETENTION_DAYS=90` in
+  `fly.toml`; a background sweep runs hourly). A report is therefore available to the student for 90 days. The main app
+  must show that number and the privacy policy must state it. With the setting at 0 nothing is deleted.
 - **Erase one student:** `DELETE /api/v1/interviews/by-ref/{external_ref}` deletes their interviews, answers, reports,
   events and any stored audio. Supabase's daily backups can keep erased rows until they expire; say so in the privacy
   policy.
 - **Purchases:** `packs` and `pack_payments` hold only the student reference, plan, minutes, payment ids and dates. They
-  are deliberately **not** removed by the erase endpoint, because deleting them would let a student reset a balance or
-  a refund window. Decide with counsel whether and when they are deleted.
+  are **not** removed by the interview erase endpoint (so erasing interviews never resets or refunds a balance), and they
+  are not purged by retention. When a student deletes their account, the main app calls
+  `DELETE /api/v1/packs/by-ref/{external_ref}`, which removes every wallet and purchase record for that student in one
+  step. After that nothing identifying the student, even by a hashed reference, remains in this service; the payment
+  processor keeps the financial record. Supabase's daily backups can keep removed rows until they expire.
 
 ## 8. What the main app must do
 

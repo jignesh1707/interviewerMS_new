@@ -300,3 +300,24 @@ def test_a_purchase_after_expiry_starts_fresh_so_leftover_minutes_stay_gone(stor
     assert row["minutes_total"] == 150  # not 150 + 135 left over from before
     assert row["minutes_used"] == 0 and row["interviews_started"] == 0
     assert row["expires_at"] == T0 + 42 * DAY
+
+
+# ----------------------------------------------------------------------------- erasing a student's wallets
+
+
+def test_erasing_removes_every_wallet_and_payment_of_one_student(store):
+    other = ("t1", "stu-2", "economy")
+    activate(store, payment_id="a")
+    activate(store, payment_id="b", key=("t1", "stu-1", "premium"))
+    activate(store, payment_id="c", key=other)
+    assert store.packs_erase("t1", "stu-1") == {"deleted_wallets": 2, "deleted_payments": 2}
+    assert wallet(store) is None and wallet(store, ("t1", "stu-1", "premium")) is None
+    assert wallet(store, other)["minutes_total"] == 150  # another student is untouched
+
+
+def test_erasing_is_idempotent_and_scoped_to_the_tenant(store):
+    activate(store, payment_id="a")
+    assert store.packs_erase("another-tenant", "stu-1") == {"deleted_wallets": 0, "deleted_payments": 0}
+    assert wallet(store) is not None
+    assert store.packs_erase("t1", "stu-1")["deleted_wallets"] == 1
+    assert store.packs_erase("t1", "stu-1") == {"deleted_wallets": 0, "deleted_payments": 0}
