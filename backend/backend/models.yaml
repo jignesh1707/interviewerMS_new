@@ -18,8 +18,9 @@
 #
 # A provider with no API key in .env is skipped automatically, so unused providers cost nothing.
 #
-# GPT-6 Luna accepts `reasoning` / `reasoning_effort`, and the service sets neither, so the model's own default
-# applies. If `python -m app.llm_smoke` or the logs show a lot of output tokens, that is where the cost went.
+# GPT-6 Luna runs with `reasoning_effort: low` (set through `options` below). Left at its default, a staging test on
+# 2026-10-15 saw calls of 20 s to over 2 minutes with reasoning tokens in the output; with low effort the same request
+# took about 4 to 5 s and used no reasoning tokens. Quality is unchanged only if the reports read as good: compare them.
 #
 # `options` (optional, per model) tweak the request. For Anthropic's newer models:
 #   omit_temperature: they reject a non-default temperature.
@@ -40,6 +41,8 @@ tiers:
       input_price: 0.10
       output_price: 0.50
       priority: 0
+      options: &luna_options
+        body: {reasoning_effort: low}
     - provider: openai
       model: gpt-4o-mini
       input_price: 0.15
@@ -58,6 +61,7 @@ tiers:
       input_price: 0.10
       output_price: 0.50
       priority: 0
+      options: *luna_options
     - provider: openai
       model: gpt-4o-mini
       input_price: 0.15
@@ -81,6 +85,7 @@ tiers:
       input_price: 0.10
       output_price: 0.50
       priority: 0
+      options: *luna_options
     - provider: openai
       model: gpt-4o
       input_price: 2.50

@@ -188,3 +188,29 @@ def test_data_collection_preference_configurable(setting, expected):
 
 def test_client_without_extra_body_defaults_to_empty():
     assert OpenAICompatibleClient("deepseek", "https://api.deepseek.com", "k", 5).extra_body == {}
+
+
+def test_every_luna_entry_runs_at_low_reasoning_effort():
+    config = load_router_config(MODELS_YAML)
+    for tier in ("cheap", "standard", "premium"):
+        first = config.candidates(tier)[0]
+        assert first.options == {"body": {"reasoning_effort": "low"}}
+
+
+async def test_model_options_body_reaches_the_request_but_cannot_replace_core_fields(monkeypatch):
+    monkeypatch.setattr("app.llm.providers.openai_compatible.httpx.AsyncClient", _Client)
+    client = _router()._providers["openrouter"]
+    options = {"body": {"reasoning_effort": "low", "model": "evil/other", "stream": True, "messages": []}}
+    with bound_provider_call(task="question_generation", provider="openrouter", model="openai/gpt-6-luna"):
+        await client.complete(_messages(), "openai/gpt-6-luna", 0.4, 256, options=options)
+    sent = _Client.sent["json"]
+    assert sent["reasoning_effort"] == "low"
+    assert sent["model"] == "openai/gpt-6-luna" and sent["stream"] is False and sent["messages"]
+
+
+async def test_no_options_leaves_the_request_unchanged(monkeypatch):
+    monkeypatch.setattr("app.llm.providers.openai_compatible.httpx.AsyncClient", _Client)
+    client = _router()._providers["openrouter"]
+    with bound_provider_call(task="question_generation", provider="openrouter", model="openai/gpt-6-luna"):
+        await client.complete(_messages(), "openai/gpt-6-luna", 0.4, 256)
+    assert "reasoning_effort" not in _Client.sent["json"]
