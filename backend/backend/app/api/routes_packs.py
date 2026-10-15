@@ -76,6 +76,16 @@ async def expire_pack(payload: ExpireRequest, tenant: Tenant) -> dict:
     return await _packs().expire(tenant, payload.external_ref, payload.plan)
 
 
+@router.delete("/by-ref/{external_ref}")
+async def erase_packs(external_ref: Student, tenant: Tenant) -> dict:
+    """Delete a student's wallets and purchase records (call it when the account is deleted). Safe to repeat.
+
+    This is not a refund and cannot be undone: the balance is gone. Interviews are erased separately with
+    `DELETE /interviews/by-ref/{external_ref}`.
+    """
+    return await _packs().erase(tenant, external_ref)
+
+
 @router.get("/{external_ref}")
 async def get_packs(external_ref: Student, tenant: Tenant) -> dict:
     """A student's balance on every plan: minutes left, days left, whether a refund is still possible."""

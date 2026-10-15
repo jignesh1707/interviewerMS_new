@@ -140,6 +140,16 @@ with `/packs/revoke` using that purchase's `plan` and `payment_id`.
 
 ## Decisions already made (do not re-open; flag if the repo makes one impossible)
 
+**Decided after Phase 0 (Jack):**
+- **Add-ons can be bought by any signed-in user**, subscriber or not. The service does not check; the app needs no
+  subscription gate for them.
+- **Account deletion removes the wallets too**: in `delete_account`, after cancelling the Stripe subscription, call
+  `DELETE /interviews/by-ref/{ref}` and then `DELETE /api/v1/packs/by-ref/{ref}` (both are idempotent), then delete the user.
+  The confirmation dialog names the minutes that will be lost. No automatic refund.
+- **Reports are kept 90 days** (`RETENTION_DAYS=90` on the service, counted from the interview's creation). Show
+  "reports are kept for 90 days"; after that the history row keeps score and readiness only.
+- **Test on a separate resumetojob staging app and database with Stripe test mode**, never against production data.
+
 0. **Five interviews are included with the monthly subscription ($29.99).** Plan `included_monthly` (75 minutes, 15-minute
    interviews). Grant it on every **paid** subscription invoice (first payment and renewals; never during the trial, on
    $0 invoices or on proration invoices from plan changes) with `payment_id` = the invoice id. **Unused interviews roll

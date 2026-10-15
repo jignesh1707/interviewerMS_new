@@ -21,6 +21,9 @@ primary_region = "iad"
   # A report build with no progress for this long is taken over by the other machine (default 300 s). A normal build
   # takes 25-35 s; a worst case with one fallback can pass two minutes, and a lower value would build it twice.
   FINISH_STALE_SECONDS = "180"
+  # Interviews, answers and reports older than this are deleted (hourly sweep). Wallets and purchases are not touched. The
+  # privacy policy and the "reports are kept for N days" notice in the main app must say the same number.
+  RETENTION_DAYS = "90"
   # Limits are per TENANT, and the whole main app is one tenant, so the defaults (20 AI-backed calls a minute, 2000 a
   # day) would cap the platform at about one interview a minute. One interview is roughly 10 to 20 such calls. These
   # are starting values for staging; size them from the load test. Per-student limits (30/min, 200/day) stay as the

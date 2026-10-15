@@ -471,6 +471,21 @@ class Store:
         )
         return "expired" if changed == 1 else "already_expired"
 
+    def packs_erase(self, tenant_id: str, external_ref: str) -> dict[str, int]:
+        """Delete every wallet and purchase record of one student (their account was deleted).
+
+        After this the student has no balance, no history here and nothing to reset: the reference came from a deleted
+        account, so no one can claim it again. The payment processor keeps the financial record.
+        """
+        with self.db.transaction() as tx:
+            payments = tx.execute_count(
+                "DELETE FROM pack_payments WHERE tenant_id = ? AND external_ref = ?", (tenant_id, external_ref)
+            )
+            wallets = tx.execute_count(
+                "DELETE FROM packs WHERE tenant_id = ? AND external_ref = ?", (tenant_id, external_ref)
+            )
+        return {"deleted_wallets": wallets, "deleted_payments": payments}
+
     def pack_revoke(
         self,
         tenant_id: str,
