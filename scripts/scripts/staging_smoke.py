@@ -7,6 +7,8 @@ Standard library only, so it runs anywhere. Use it against a local container or 
     python scripts/scripts/staging_smoke.py --base-url http://interviewer-ms.flycast:8080 --api-key <key> --audio
     python scripts/scripts/staging_smoke.py --base-url ... --api-key ... --students 10     # small load test
 
+A 503 with Retry-After (for example "speech recognition is busy") is retried up to 6 times, as the main app should do.
+
 The key can also come from INTERVIEWER_API_KEY. Every student is a throwaway `smoke-...` id and is erased at the end
 (use --keep to leave the data for inspection). Exit code 0 means every check passed.
 
@@ -38,7 +40,7 @@ JD = "Backend engineer. Python, Kafka, Kubernetes, 5+ years experience, strong c
 
 
 class Failure(Exception):
-    pass
+    retry_after: float | None = None  # set when the service said "busy, retry" (503 with Retry-After)
 
 
 class Client:
@@ -46,8 +48,24 @@ class Client:
         self.base = base_url.rstrip("/") + "/api/v1"
         self.key = api_key
         self.timeout = timeout
+        self.retries = 0
+        self.retry_wait = 0.0
+        self._lock = threading.Lock()
 
-    def call(self, method: str, path: str, body=None, form=None, expect=(200,)):
+    def call(self, method: str, path: str, body=None, form=None, expect=(200,), max_503_retries: int = 6):
+        """One request, retrying a 503 that carries Retry-After, as the main app is expected to."""
+        for attempt in range(max_503_retries + 1):
+            try:
+                return self._call_once(method, path, body, form, expect)
+            except Failure as error:
+                if error.retry_after is None or attempt == max_503_retries:
+                    raise
+                with self._lock:
+                    self.retries += 1
+                    self.retry_wait += error.retry_after
+                time.sleep(error.retry_after)
+
+    def _call_once(self, method: str, path: str, body=None, form=None, expect=(200,)):
         headers = {"X-API-Key": self.key}
         data = None
         if body is not None:
@@ -71,7 +89,13 @@ class Client:
                     f"{method} {path} -> 502: no AI provider answered. Are the provider API keys set on the service? "
                     f"({raw[:200]!r})"
                 )
-            raise Failure(f"{method} {path} -> {status}, expected {expect}: {raw[:300]!r}")
+            failure = Failure(f"{method} {path} -> {status}, expected {expect}: {raw[:300]!r}")
+            if status == 503 and response_headers.get("Retry-After"):
+                try:
+                    failure.retry_after = min(float(response_headers["Retry-After"]), 30.0)
+                except ValueError:
+                    pass
+            raise failure
         kind = response_headers.get("Content-Type", "")
         return status, (json.loads(raw) if raw and "json" in kind else raw)
 
@@ -259,6 +283,8 @@ def main() -> int:
     finish_calls = sorted(item["finish_call_s"] for item in results if "finish_call_s" in item)
     if finish_calls:
         print(f"finish call itself: median {finish_calls[len(finish_calls) // 2]} s, max {finish_calls[-1]} s")
+    if client.retries:
+        print(f"503 busy answers retried after Retry-After: {client.retries} (total wait {client.retry_wait:.0f} s across all students)")
     return 0 if passed == len(results) else 1
 
 
