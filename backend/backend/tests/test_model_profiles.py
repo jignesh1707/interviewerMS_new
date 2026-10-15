@@ -57,12 +57,19 @@ def test_premium_profile_only_lists_us_providers_and_leads_with_anthropic():
     assert config.providers_in("premium") <= US_ONLY
 
 
-def test_economy_profile_is_the_existing_deepseek_first_setup():
+def test_economy_profile_leads_with_gpt_6_luna_through_openrouter():
     config = load_router_config(MODELS_YAML)
     for tier in ("cheap", "standard", "premium"):
         assert config.candidates(tier, profile="economy") == config.candidates(tier)
-        assert config.candidates(tier, profile=None)[0].provider == "deepseek"
-    assert "deepseek" in config.providers_in("economy")
+        first = config.candidates(tier, profile=None)[0]
+        assert (first.provider, first.model) == ("openrouter", "openai/gpt-6-luna")
+    assert config.providers_in("economy") == {"openrouter", "openai", "anthropic"}
+
+
+def test_no_shipped_profile_lists_deepseek():
+    config = load_router_config(MODELS_YAML)
+    for profile in config.profile_names():
+        assert "deepseek" not in config.providers_in(profile), profile
 
 
 def test_an_unknown_profile_is_an_error_and_never_falls_back_to_economy():
@@ -80,10 +87,10 @@ async def test_each_profile_is_served_by_its_own_first_choice():
     economy = await router.complete("answer_analysis", messages(), profile="economy")
     premium = await router.complete("answer_analysis", messages(), profile="premium")
     default = await router.complete("answer_analysis", messages())
-    assert economy.provider == "deepseek" and default.provider == "deepseek"
+    assert economy.provider == "openrouter" and default.provider == "openrouter"
     assert premium.provider == "anthropic"
     assert premium.profile == "premium" and economy.profile == "economy"
-    assert len(providers["deepseek"].calls) == 2 and len(providers["anthropic"].calls) == 1
+    assert len(providers["openrouter"].calls) == 2 and len(providers["anthropic"].calls) == 1
 
 
 def _misconfigured() -> RouterConfig:

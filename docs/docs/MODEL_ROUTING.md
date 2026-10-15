@@ -4,7 +4,7 @@ The router lives in `backend/app/llm/router.py` and is configured by `backend/mo
 
 ## Concepts
 
-- **Tier**: an ordered list of `{provider, model}` candidates. Fallback order is DeepSeek, then OpenRouter, then OpenAI, then Anthropic.
+- **Tier**: an ordered list of `{provider, model}` candidates. In the shipped Economy setup the order is OpenAI GPT-6 Luna through OpenRouter, then OpenAI directly, then Anthropic.
 - **Task**: a named unit of work (`question_generation`, `final_scoring`, ...).
 - **Task map**: assigns each task to a tier, so simple work never reaches an expensive model.
 - **Circuit breaker**: a provider that keeps failing is temporarily removed from the candidate list.
@@ -47,8 +47,8 @@ default_tier: standard
 
 Rules:
 
-- Candidate order inside a tier is the fallback order. Put DeepSeek first, then OpenRouter, then OpenAI, then Anthropic.
-- OpenRouter is called at `https://openrouter.ai/api/v1` with the model id `deepseek/deepseek-v4.1-flash`. By default requests carry `provider.data_collection = deny` (`OPENROUTER_DATA_COLLECTION`), so OpenRouter only routes to upstream hosts that do not retain or train on prompts. If no such host is available the call fails and routing moves on.
+- Candidate order inside a tier is the fallback order. The shipped Economy order is OpenRouter (GPT-6 Luna), then OpenAI, then Anthropic.
+- OpenRouter is called at `https://openrouter.ai/api/v1` with the model id `openai/gpt-6-luna` ($0.10 in / $0.50 out per million tokens, checked 2026-10-08; OpenAI is the only host it lists). By default requests carry `provider.data_collection = deny` (`OPENROUTER_DATA_COLLECTION`), so OpenRouter only routes to upstream hosts that do not retain or train on prompts. If no such host is available the call fails and routing moves on.
 - Prices are only used for the cost estimate reported in `/api/v1/models` and `routing_trace`; they
   are not used for routing decisions. Update them to match current provider pricing.
 - Set `priority` on a candidate to override YAML order (lower is tried first).
@@ -69,7 +69,7 @@ This is useful for forcing a higher tier on an important candidate without chang
 with its own `cheap`, `standard` and `premium` lists. `plans.yaml` picks one per plan with `llm_profile`. The shipped
 setup:
 
-- `economy`: DeepSeek, then OpenRouter, OpenAI, Anthropic.
+- `economy`: GPT-6 Luna through OpenRouter for every tier, then OpenAI (gpt-4o-mini / gpt-4o), then Anthropic. No DeepSeek.
 - `premium`: Anthropic (Haiku 4.5 for light work, Sonnet 5.5 for the rest), then OpenAI. No DeepSeek.
 
 Rules:
@@ -79,7 +79,7 @@ Rules:
 - **A plan's `llm_allowed_providers`** is passed with every AI call (`authorized_providers`) and enforced by the router
   regardless of `models.yaml`. At startup the service refuses to start if a plan names a profile that does not exist,
   or if its profile lists a provider the plan forbids.
-- **Replacing a provider** (for example removing DeepSeek from Economy) is an edit to `models.yaml` plus a restart. If
+- **Replacing a provider** (for example putting DeepSeek back into Economy, which also needs it added to that plan's `llm_allowed_providers`) is an edit to `models.yaml` plus a restart. If
   you change which companies process student data, update the privacy policy and consent text in the main app.
   `GET /api/v1/plans` shows the providers each plan may use right now.
 

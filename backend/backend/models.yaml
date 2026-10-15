@@ -1,19 +1,25 @@
 # Model routing configuration.
 #
 # Two PROFILES, one per plan family (plans.yaml picks a profile with `llm_profile`):
-#   economy  (the top-level `tiers` below, also the default): DeepSeek first, then OpenRouter, OpenAI, Anthropic.
-#   premium  (`profiles.premium` at the bottom): US providers only. Anthropic first, then OpenAI. Never DeepSeek.
+#   economy  (the top-level `tiers` below, also the default): OpenAI GPT-6 Luna through OpenRouter first, then OpenAI
+#            directly, then Anthropic. No DeepSeek.
+#   premium  (`profiles.premium` at the bottom): Anthropic first, then OpenAI.
 # Within every profile the fallback order is the YAML order, unless `priority` is set (lower is tried first).
-# Fallbacks never leave a profile, so a Premium interview cannot fall through to DeepSeek. plans.yaml also lists the
-# providers a plan may use (`llm_allowed_providers`) and the router enforces that list on every call, and the service
-# refuses to start if the two files disagree. If you change which companies see student data, update the privacy
-# policy and consent text in the main app too.
+# Fallbacks never leave a profile. plans.yaml also lists the providers a plan may use (`llm_allowed_providers`) and
+# the router enforces that list on every call, and the service refuses to start if the two files disagree. If you
+# change which companies see student data, update the privacy policy and consent text in the main app too.
 #
 # Prices are USD per 1,000,000 tokens and are used for cost estimates only. Keep them current: they drive the
-# estimate in /api/v1/models. DeepSeek prices are peak-hour rates. Anthropic prices are first-party list prices
-# (checked 2026-09); check the OpenAI model names and prices against OpenAI's current list before relying on them.
+# estimate in /api/v1/models. GPT-6 Luna prices are OpenRouter's standard (non-flex) endpoint, checked 2026-10-08:
+# $0.10 in / $0.50 out (they double above 272k prompt tokens, which an interview never reaches). OpenAI is the only
+# host OpenRouter lists for it. Anthropic prices are first-party list prices (checked 2026-09). The direct OpenAI
+# names and prices (gpt-4o-mini, gpt-4o) have NOT been checked against OpenAI's current list; check them before
+# relying on the fallback.
 #
 # A provider with no API key in .env is skipped automatically, so unused providers cost nothing.
+#
+# GPT-6 Luna accepts `reasoning` / `reasoning_effort`, and the service sets neither, so the model's own default
+# applies. If `python -m app.llm_smoke` or the logs show a lot of output tokens, that is where the cost went.
 #
 # `options` (optional, per model) tweak the request. For Anthropic's newer models:
 #   omit_temperature: they reject a non-default temperature.
@@ -24,54 +30,44 @@
 # Jobs are matched to a tier by the `tasks` map at the bottom:
 #   cheap    -> short, high-volume work
 #   standard -> core structured generation and per-answer analysis
-#   premium  -> final scoring and the recruiter narrative (the stronger model)
+#   premium  -> final scoring and the recruiter narrative
 
 tiers:
   # High-volume, short-output work: tagging, follow-up questions, coaching hints.
   cheap:
-    - provider: deepseek
-      model: deepseek-flash
-      input_price: 0.30
-      output_price: 1.20
-      priority: 0
     - provider: openrouter
-      model: deepseek/deepseek-v4.1-flash
-      input_price: 0.30
-      output_price: 1.20
-      priority: 1
+      model: openai/gpt-6-luna
+      input_price: 0.10
+      output_price: 0.50
+      priority: 0
     - provider: openai
       model: gpt-4o-mini
       input_price: 0.15
       output_price: 0.60
-      priority: 2
+      priority: 1
     - provider: anthropic
       model: claude-haiku-4-5
       input_price: 1.00
       output_price: 5.00
-      priority: 3
+      priority: 2
 
   # Core structured generation: STAR question sets, per-answer analysis, tips.
   standard:
-    - provider: deepseek
-      model: deepseek-flash
-      input_price: 0.30
-      output_price: 1.20
-      priority: 0
     - provider: openrouter
-      model: deepseek/deepseek-v4.1-flash
-      input_price: 0.30
-      output_price: 1.20
-      priority: 1
+      model: openai/gpt-6-luna
+      input_price: 0.10
+      output_price: 0.50
+      priority: 0
     - provider: openai
       model: gpt-4o-mini
       input_price: 0.15
       output_price: 0.60
-      priority: 2
+      priority: 1
     - provider: anthropic
       model: claude-sonnet-5-5
       input_price: 2.00
       output_price: 10.00
-      priority: 3
+      priority: 2
       options: &sonnet_low
         omit_temperature: true
         body:
@@ -80,26 +76,21 @@ tiers:
 
   # High-stakes reasoning: final scoring and recruiter narrative.
   premium:
-    - provider: deepseek
-      model: deepseek-v4-pro
-      input_price: 1.32
-      output_price: 3.96
-      priority: 0
     - provider: openrouter
-      model: deepseek/deepseek-v4-pro-0813
-      input_price: 0.66
-      output_price: 1.98
-      priority: 1
+      model: openai/gpt-6-luna
+      input_price: 0.10
+      output_price: 0.50
+      priority: 0
     - provider: openai
       model: gpt-4o
       input_price: 2.50
       output_price: 10.00
-      priority: 2
+      priority: 1
     - provider: anthropic
       model: claude-sonnet-5-5
       input_price: 2.00
       output_price: 10.00
-      priority: 3
+      priority: 2
       options: &sonnet_medium
         omit_temperature: true
         body:

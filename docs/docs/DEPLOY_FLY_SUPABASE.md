@@ -61,13 +61,13 @@ fly secrets set \
   CALLBACK_ALLOWED_HOSTS='app.example.com' \
   DATABASE_URL='postgresql://interviewer_app.<ref>:<pw>@aws-0-<region>.pooler.supabase.com:6543/postgres?sslmode=require' \
   REDIS_URL='rediss://default:<token>@<name>.upstash.io:6379' \
-  DEEPSEEK_API_KEY='...' OPENROUTER_API_KEY='...'
+  OPENROUTER_API_KEY='...' OPENAI_API_KEY='...'
 ```
 
 To sell interview packs, also set `PLANS_ENABLED=true` and edit `backend/plans.yaml` (pack size and days, lengths,
 refund rule) and `backend/models.yaml` (which AI providers serve each plan). Students' packs and payments live in the
 `packs` and `pack_payments` tables in the same Postgres schema, which the service creates on start. Add the keys for
-every provider your plans use (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`...), set `RETENTION_DAYS`,
+every provider your plans use (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`), set `RETENTION_DAYS`,
 and run `python -m app.llm_smoke --profile premium` (and `economy`) once to check them. See section 4b of
 `INTEGRATION.md` and `DATA_HANDLING.md`.
 

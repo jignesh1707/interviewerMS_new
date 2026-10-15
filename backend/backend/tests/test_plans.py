@@ -113,6 +113,8 @@ def test_shipped_plans_file_matches_the_two_offers():
     assert (premium.pack_minutes, premium.pack_days) == (250, 30)
     assert economy.durations == premium.durations == [15, 20, 25]
     assert premium.llm_profile == "premium"
-    # Premium student data must never reach DeepSeek: the allow-list is the guarantee, the model lists are not.
-    assert "deepseek" not in (premium.llm_allowed_providers or ["deepseek"])
+    # No plan's student data may reach DeepSeek: the allow-list is the guarantee, the model lists are not.
+    assert economy.llm_allowed_providers is not None and premium.llm_allowed_providers is not None
+    assert set(economy.llm_allowed_providers) == {"openrouter", "openai", "anthropic"}
+    assert set(premium.llm_allowed_providers) == {"anthropic", "openai"}
     assert isinstance(config, PlansConfig)

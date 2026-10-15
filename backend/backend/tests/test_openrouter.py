@@ -30,31 +30,27 @@ def _router(**overrides):
     return ModelRouter(settings=settings, config=load_router_config(MODELS_YAML))
 
 
-def test_yaml_keeps_cheap_standard_on_flash_and_premium_on_pro():
+def test_yaml_runs_every_economy_tier_on_gpt_6_luna_through_openrouter():
     config = load_router_config(MODELS_YAML)
-    expected = {
-        "cheap": ("deepseek-flash", "deepseek/deepseek-v4.1-flash"),
-        "standard": ("deepseek-flash", "deepseek/deepseek-v4.1-flash"),
-        "premium": ("deepseek-v4-pro", "deepseek/deepseek-v4-pro-0813"),
-    }
-    for tier, (direct, via_openrouter) in expected.items():
-        first, second = config.candidates(tier)[:2]
-        assert (first.provider, first.model) == ("deepseek", direct)
-        assert (second.provider, second.model) == ("openrouter", via_openrouter)
+    for tier in ("cheap", "standard", "premium"):
+        first = config.candidates(tier)[0]
+        assert (first.provider, first.model) == ("openrouter", "openai/gpt-6-luna")
+        assert (first.input_price, first.output_price) == (0.10, 0.50)
+        assert all(c.provider != "deepseek" for c in config.candidates(tier))
 
 
 def test_each_task_resolves_to_the_intended_tier_and_model():
     config = load_router_config(MODELS_YAML)
     expected = {
-        "resume_summary": ("cheap", "deepseek-flash"),
-        "jd_metadata": ("cheap", "deepseek-flash"),
-        "followup_generation": ("cheap", "deepseek-flash"),
-        "answer_coaching": ("cheap", "deepseek-flash"),
-        "question_generation": ("standard", "deepseek-flash"),
-        "tips_generation": ("standard", "deepseek-flash"),
-        "answer_analysis": ("standard", "deepseek-flash"),
-        "final_scoring": ("premium", "deepseek-v4-pro"),
-        "report_narrative": ("premium", "deepseek-v4-pro"),
+        "resume_summary": ("cheap", "openai/gpt-6-luna"),
+        "jd_metadata": ("cheap", "openai/gpt-6-luna"),
+        "followup_generation": ("cheap", "openai/gpt-6-luna"),
+        "answer_coaching": ("cheap", "openai/gpt-6-luna"),
+        "question_generation": ("standard", "openai/gpt-6-luna"),
+        "tips_generation": ("standard", "openai/gpt-6-luna"),
+        "answer_analysis": ("standard", "openai/gpt-6-luna"),
+        "final_scoring": ("premium", "openai/gpt-6-luna"),
+        "report_narrative": ("premium", "openai/gpt-6-luna"),
     }
     assert set(config.tasks) == set(expected)
     for task, (tier, model) in expected.items():
@@ -76,7 +72,7 @@ def test_only_configured_providers_are_used():
     assert router.provider_configured("openai") is False
     assert router.provider_configured("anthropic") is False
     ready, skipped = router._plan("standard", None)
-    assert [c.provider for c in ready] == ["deepseek", "openrouter"]
+    assert [c.provider for c in ready] == ["openrouter"]
     assert {item["provider"] for item in skipped} == {"openai", "anthropic"}
 
 
@@ -86,9 +82,9 @@ def test_openrouter_unconfigured_without_key_or_with_bad_endpoint():
 
 
 def test_openrouter_can_be_disabled_by_policy():
-    router = _router(llm_disabled_providers="openrouter")
+    router = _router(llm_disabled_providers="openrouter", openai_api_key="sk-proj-test-12345678")
     ready, _ = router._plan("standard", None)
-    assert [c.provider for c in ready] == ["deepseek"]
+    assert [c.provider for c in ready] == ["openai"]
     assert router.status()["providers"]["openrouter"]["disabled_by_policy"] is True
 
 
@@ -96,23 +92,37 @@ def test_openrouter_key_is_registered_for_log_redaction():
     assert OPENROUTER_KEY in _router()._secret_values()
 
 
-async def test_falls_back_from_deepseek_to_openrouter_with_openrouter_model_id():
+async def test_falls_back_from_gpt_6_luna_on_openrouter_to_openai_direct():
     router = _router()
-    deepseek = FakeProvider("deepseek", fail=True)
-    openrouter = FakeProvider("openrouter")
+    openrouter = FakeProvider("openrouter", fail=True)
+    openai = FakeProvider("openai")
     router._providers = {
-        "deepseek": deepseek,
+        "deepseek": FakeProvider("deepseek"),
         "openrouter": openrouter,
-        "openai": FakeProvider("openai"),
+        "openai": openai,
         "anthropic": FakeProvider("anthropic"),
     }
-    router.settings.openai_api_key = ""  # keep OpenAI/Anthropic out of the plan
-    router.provider_configured = lambda name: name in {"deepseek", "openrouter"}
+    router.provider_configured = lambda name: name in {"openrouter", "openai"}
     result = await router.complete("question_generation", _messages())
-    assert result.provider == "openrouter"
-    assert result.model == "deepseek/deepseek-v4.1-flash"
-    assert deepseek.calls == 1 and openrouter.calls == 1
-    assert router.health("deepseek").consecutive_failures == 1
+    assert result.provider == "openai"
+    assert result.model == "gpt-4o-mini"
+    assert openrouter.calls == 1 and openai.calls == 1
+    assert router.health("openrouter").consecutive_failures == 1
+
+
+async def test_deepseek_is_never_tried_by_the_shipped_economy_setup():
+    router = _router()
+    deepseek = FakeProvider("deepseek")
+    router._providers = {
+        "deepseek": deepseek,
+        "openrouter": FakeProvider("openrouter", fail=True),
+        "openai": FakeProvider("openai", fail=True),
+        "anthropic": FakeProvider("anthropic", fail=True),
+    }
+    router.provider_configured = lambda name: True
+    with pytest.raises(Exception):
+        await router.complete("question_generation", _messages())
+    assert deepseek.calls == 0
 
 
 class _Response:
@@ -120,7 +130,7 @@ class _Response:
 
     def json(self):
         return {
-            "model": "deepseek/deepseek-v4.1-flash",
+            "model": "openai/gpt-6-luna",
             "choices": [{"message": {"content": " {\"ok\": true} "}}],
             "usage": {"prompt_tokens": 7, "completion_tokens": 3},
         }
@@ -147,11 +157,11 @@ async def test_openrouter_request_shape_and_credentials(monkeypatch):
     monkeypatch.setattr("app.llm.providers.openai_compatible.httpx.AsyncClient", _Client)
     router = _router()
     client = router._providers["openrouter"]
-    with bound_provider_call(task="question_generation", provider="openrouter", model="deepseek/deepseek-v4.1-flash"):
-        response = await client.complete(_messages(), "deepseek/deepseek-v4.1-flash", 0.4, 256)
+    with bound_provider_call(task="question_generation", provider="openrouter", model="openai/gpt-6-luna"):
+        response = await client.complete(_messages(), "openai/gpt-6-luna", 0.4, 256)
     sent = _Client.sent
     assert sent["url"] == "https://openrouter.ai/api/v1/chat/completions"
-    assert sent["json"]["model"] == "deepseek/deepseek-v4.1-flash"
+    assert sent["json"]["model"] == "openai/gpt-6-luna"
     assert sent["json"]["provider"] == {"data_collection": "deny"}
     assert sent["headers"]["Authorization"] == f"Bearer {OPENROUTER_KEY}"
     assert DEEPSEEK_KEY not in str(sent)
