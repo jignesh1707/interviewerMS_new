@@ -139,6 +139,11 @@ class Settings(BaseSettings):
     stt_queue_timeout_seconds: float = 20.0
     # Load the Whisper model when the service starts instead of on the first answer.
     stt_preload: bool = True
+    # Piper runs one process per request, so a burst starts many CPU-bound processes at once and they all slow down
+    # together until each hits its 60 s limit. Cap them per machine; extra requests wait up to
+    # tts_queue_timeout_seconds, then get a 503 with Retry-After.
+    tts_max_concurrent: int = 2
+    tts_queue_timeout_seconds: float = 20.0
 
     piper_binary: str = "piper"
     piper_model_path: str = ""
