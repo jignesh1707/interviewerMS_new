@@ -526,3 +526,9 @@ def test_create_interview_request_does_not_accept_provider_override():
     )
     assert "shadow" not in request.authorized_providers
     assert not hasattr(payload.config, "openai_api_key")
+
+
+def test_default_output_cap_leaves_room_for_a_verbose_fallback_model():
+    # Claude Sonnet writes ~1700-1900 tokens for a 7-question set; a 2048 cap truncated its JSON mid-object (a 502
+    # for the student) whenever Luna failed and Sonnet took over.
+    assert Settings.model_fields["llm_max_output_tokens"].default >= 4096
