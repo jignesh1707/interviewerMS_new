@@ -89,14 +89,15 @@ plans:
     llm_allowed_providers: [openrouter, openai, anthropic]
     refund: {max_interviews_started: 99, max_minutes_used: 270, rule: any}
 
-# Products the main app sells on top of a subscription. activate takes a `sku`; the size comes from here, so the main app
-# never sends a number of minutes. Interviews are booked in whole lengths from the wallet, so "10 x 15 minutes" is 150
-# minutes; a student may also spend them as 20 or 25 minute interviews because the wallet allows those lengths.
+# Products the main app sells on top of a subscription. Each purchase is ONE sku and ONE payment. activate takes the sku;
+# the size comes from here, so the main app never sends a number of minutes. Interviews are booked in whole lengths from
+# the wallet, so "10 x 15 minutes" is 150 minutes; a student may also spend them as 20 or 25 minute interviews because the
+# wallet allows those lengths.
 #   $5  : 10 Economy interviews of 15 minutes
-#   $10 : 20 Economy interviews of 15 minutes, OR 5 Premium (Anthropic) interviews of 15 minutes (the student picks one)
-#   $20 : 650 Economy minutes at any length AND 10 Premium interviews of 25 minutes. That is TWO skus bought with one
-#         payment: send two activate calls with different payment_ids (for example "<payment>:economy" and
-#         "<payment>:premium"), and check refund_eligible on both wallets before refunding.
+#   $10 : 20 Economy interviews of 15 minutes (addon_10_economy), OR 5 Premium (Anthropic) interviews of 15 minutes
+#         (addon_10_premium); the student picks one at checkout
+#   $20 : 650 Economy minutes at any length (addon_20_economy), OR 10 Premium interviews of 25 minutes
+#         (addon_20_premium); the student picks one at checkout
 skus:
   addon_5:
     {plan: economy, minutes: 150, days: 30}

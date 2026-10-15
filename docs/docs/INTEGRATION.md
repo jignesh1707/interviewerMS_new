@@ -226,22 +226,21 @@ minutes. Send exactly one of `plan` or `sku`.
 |---|---|---|---|---|
 | `addon_5` ($5) | `economy` | 150 | 30 | 10 interviews of 15 minutes |
 | `addon_10_economy` ($10) | `economy` | 300 | 30 | 20 interviews of 15 minutes |
-| `addon_10_premium` ($10, instead of the line above) | `premium` | 75 | 30 | 5 interviews of 15 minutes with Anthropic |
+| `addon_10_premium` ($10) | `premium` | 75 | 30 | 5 interviews of 15 minutes with Anthropic |
 | `addon_20_economy` ($20) | `economy` | 650 | 30 | any mix of 15/20/25 minute interviews |
-| `addon_20_premium` ($20, together with the line above) | `premium` | 250 | 30 | 10 interviews of 25 minutes with Anthropic |
+| `addon_20_premium` ($20) | `premium` | 250 | 30 | 10 interviews of 25 minutes with Anthropic |
 
 ```bash
 curl -sX POST http://localhost:8080/api/v1/packs/activate -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
   -d '{"external_ref": "STUDENT_HASH", "sku": "addon_5", "payment_id": "pi_3Abc", "purchased_at": "2026-10-02T12:00:00Z"}'
 ```
 
-- Several skus fill one wallet and **stack** (minutes added, expiry pushed back), whatever their sizes. The $10 add-on
-  is one product with two choices (Economy or Premium); the student picks at checkout and you activate that one sku.
-- **The $20 add-on is two skus bought with one payment.** Send two `activate` calls with **different `payment_id`s**,
-  for example `<payment>:economy` and `<payment>:premium` (the same id twice would be treated as a replay).
-- **Refunding the $20 add-on:** read both wallets (`GET /packs/{ref}`) and refund only if **both** show
-  `refund_eligible`; then call `/packs/revoke` twice, once per wallet with its own payment id. If you refund when only
-  one is eligible, the other revoke answers 409 and you are left with a half refund.
+- **One purchase is one sku and one payment.** The $10 and $20 add-ons each come in an Economy and a Premium version;
+  the student picks one at checkout and you activate that sku, with the Stripe payment's id as `payment_id`. There is no
+  bundle: nobody gets two wallets from one payment.
+- Several skus fill one wallet and **stack** (minutes added, expiry pushed back), whatever their sizes. A student can
+  also hold an Economy and a Premium wallet at the same time (two separate purchases).
+- **Refund:** `/packs/revoke` with that purchase's `plan` and `payment_id`. It removes only that purchase's minutes and days.
 - `refund_eligible` is per wallet, not per purchase: it looks at everything the student has used from that wallet.
 - Interviews are booked in whole lengths from a wallet. "10 interviews of 15 minutes" is 150 minutes; the wallet also
   allows 20 and 25 minute interviews, so a student can spend the same minutes as fewer, longer interviews.

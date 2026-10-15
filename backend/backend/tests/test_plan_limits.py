@@ -705,15 +705,15 @@ def test_a_replayed_sku_payment_is_applied_once(client):
     assert wallets(client)["economy"]["minutes_remaining"] == 90
 
 
-def test_one_payment_can_fill_two_wallets_with_two_payment_ids(client):
-    # the $20 bundle: Economy minutes and Premium minutes from one Stripe payment
-    buy_sku(client, "big", payment_id="pi_1:economy")
-    buy_sku(client, "prem", payment_id="pi_1:premium")
+def test_a_student_can_hold_an_economy_and_a_premium_wallet_and_refund_each_separately(client):
+    # two purchases (an Economy add-on and a Premium add-on), each its own payment and its own wallet
+    buy_sku(client, "big", payment_id="pi_1")
+    buy_sku(client, "prem", payment_id="pi_2")
     held = wallets(client)
     assert held["economy"]["minutes_remaining"] == 90 and held["premium"]["minutes_remaining"] == 60
-    # refunding the bundle is two revokes, one per wallet, each with its own payment id
-    assert revoke(client, plan="economy", payment_id="pi_1:economy")["revoked"] is True
-    assert revoke(client, plan="premium", payment_id="pi_1:premium")["revoked"] is True
+    assert revoke(client, plan="economy", payment_id="pi_1")["revoked"] is True
+    assert wallets(client)["premium"]["minutes_remaining"] == 60  # the other wallet is untouched
+    assert revoke(client, plan="premium", payment_id="pi_2")["revoked"] is True
     held = wallets(client)
     assert held["economy"]["minutes_remaining"] == 0 and held["premium"]["minutes_remaining"] == 0
 

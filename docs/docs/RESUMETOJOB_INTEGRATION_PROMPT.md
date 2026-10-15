@@ -46,15 +46,17 @@ right. If a fact you need is not in the repo and not in this prompt, list it as 
 Add-ons the student buys on top (Stripe one-time payments), activated with a **`sku`**, not a plan. Read the list from
 `GET /plans` (`skus`), do not hard-code the numbers:
 
-| Add-on | sku(s) to activate | Result |
+| Add-on | sku to activate | Result |
 |---|---|---|
 | $5 | `addon_5` | 150 Economy minutes (10 interviews of 15) |
-| $10 | `addon_10_economy` **or** `addon_10_premium` (student chooses at checkout) | 300 Economy minutes (20 x 15) **or** 75 Premium minutes (5 x 15, Anthropic) |
-| $20 | `addon_20_economy` **and** `addon_20_premium`, from ONE payment | 650 Economy minutes (any length) **and** 250 Premium minutes (10 x 25) |
+| $10 Economy | `addon_10_economy` | 300 Economy minutes (20 x 15) |
+| $10 Premium | `addon_10_premium` | 75 Premium minutes (5 x 15, Anthropic) |
+| $20 Economy | `addon_20_economy` | 650 Economy minutes (any length) |
+| $20 Premium | `addon_20_premium` | 250 Premium minutes (10 x 25, Anthropic) |
 
-The $20 add-on needs **two activate calls with different `payment_id`s** (for example `<payment_intent>:economy` and
-`<payment_intent>:premium`). To refund it, check `refund_eligible` on both wallets first and then call `/packs/revoke`
-twice (once per wallet, each with its own payment id); never refund when only one wallet is eligible.
+Each purchase is **one sku and one payment** (`payment_id` = the Stripe PaymentIntent id). The $10 and $20 add-ons come in
+an Economy and a Premium version and the student picks one at checkout; nobody gets two wallets from one payment. Refund
+with `/packs/revoke` using that purchase's `plan` and `payment_id`.
 
 - Prices live in Stripe and in resumetojob, **not** in the service. The service only knows plan names.
 - Buying again while a pack is active **stacks** (minutes added, expiry pushed back). Buying after expiry or
