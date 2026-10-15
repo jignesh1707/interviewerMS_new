@@ -96,7 +96,7 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = 60.0
     llm_max_attempts_per_provider: int = 1
     provider_cooldown_seconds: float = 90.0
-    llm_max_output_tokens: int = 2048
+    llm_max_output_tokens: int = 4096  # Sonnet writes 1700-1900 tokens for a 7-question set; 2048 truncated its JSON
     llm_temperature: float = 0.4
 
     models_config_path: Path = BASE_DIR / "models.yaml"
