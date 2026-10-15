@@ -7,6 +7,14 @@
 #     `pack_days` (no days are lost). Buying after the pack expired or was used up starts a fresh pack.
 #   - Nobody gets minutes without a recorded payment: no pack means no interviews (trial users get none).
 #
+# Three kinds of wallet (a wallet is one plan for one student):
+#   included_weekly / included_monthly / included_quarterly: interviews that come WITH a subscription. They roll over while
+#       the student keeps subscribing and are gone (POST /packs/expire) when the subscription ends. Economy models only.
+#   economy / premium: add-ons the student buys on top. The size depends on the product bought, so purchases name a `sku`
+#       (see `skus` at the bottom) instead of a plan. They are valid for the days of the sku and survive the end of a
+#       subscription.
+# A student can hold several wallets at once; the main app chooses which one an interview is booked on (`plan` on create).
+#
 # `llm_profile` picks the model list from models.yaml. `llm_allowed_providers` is a hard promise about where a
 # student's data may go: the router refuses any provider not on the list, whatever models.yaml says. If you change
 # the providers here, update the privacy policy and consent text in the main app too.
@@ -27,7 +35,7 @@ profiles:
   25: {question_count: 12, max_followups: 3}
 
 plans:
-  economy:          # $10 a month; OpenAI GPT-6 Luna (via OpenRouter), then OpenAI and Anthropic. Never DeepSeek.
+  economy:          # add-on wallet (see skus); OpenAI GPT-6 Luna (via OpenRouter), then OpenAI and Anthropic. Never DeepSeek.
     pack_minutes: 150
     pack_days: 30
     durations: [15, 20, 25]
@@ -36,7 +44,7 @@ plans:
     llm_allowed_providers: [openrouter, openai, anthropic]
     refund: {max_interviews_started: 1, max_minutes_used: 15, rule: any}
 
-  premium:          # $20 a month; Anthropic, then OpenAI (never DeepSeek)
+  premium:          # add-on wallet (see skus); Anthropic, then OpenAI (never DeepSeek)
     pack_minutes: 250
     pack_days: 30
     durations: [15, 20, 25]
@@ -59,3 +67,44 @@ plans:
     llm_profile: economy
     llm_allowed_providers: [openrouter, openai, anthropic]
     refund: {max_interviews_started: 99, max_minutes_used: 75, rule: any}
+
+  # Included with the weekly subscription: two 15-minute interviews a week. pack_days is longer than a week plus payment
+  # retries, so every renewal stacks onto the old pack (rollover while subscribed).
+  included_weekly:
+    pack_minutes: 30
+    pack_days: 14
+    durations: [15]
+    default_duration: 15
+    llm_profile: economy
+    llm_allowed_providers: [openrouter, openai, anthropic]
+    refund: {max_interviews_started: 99, max_minutes_used: 30, rule: any}
+
+  # Included with the quarterly subscription: eighteen 15-minute interviews a quarter (a quarter is 90 to 92 days).
+  included_quarterly:
+    pack_minutes: 270
+    pack_days: 100
+    durations: [15]
+    default_duration: 15
+    llm_profile: economy
+    llm_allowed_providers: [openrouter, openai, anthropic]
+    refund: {max_interviews_started: 99, max_minutes_used: 270, rule: any}
+
+# Products the main app sells on top of a subscription. activate takes a `sku`; the size comes from here, so the main app
+# never sends a number of minutes. Interviews are booked in whole lengths from the wallet, so "10 x 15 minutes" is 150
+# minutes; a student may also spend them as 20 or 25 minute interviews because the wallet allows those lengths.
+#   $5  : 10 Economy interviews of 15 minutes
+#   $10 : 20 Economy interviews of 15 minutes, OR 5 Premium (Anthropic) interviews of 15 minutes (the student picks one)
+#   $20 : 650 Economy minutes at any length AND 10 Premium interviews of 25 minutes. That is TWO skus bought with one
+#         payment: send two activate calls with different payment_ids (for example "<payment>:economy" and
+#         "<payment>:premium"), and check refund_eligible on both wallets before refunding.
+skus:
+  addon_5:
+    {plan: economy, minutes: 150, days: 30}
+  addon_10_economy:
+    {plan: economy, minutes: 300, days: 30}
+  addon_10_premium:
+    {plan: premium, minutes: 75, days: 30}
+  addon_20_economy:
+    {plan: economy, minutes: 650, days: 30}
+  addon_20_premium:
+    {plan: premium, minutes: 250, days: 30}

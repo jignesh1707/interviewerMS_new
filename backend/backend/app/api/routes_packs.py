@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Path
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.api.deps import require_api_key
 from app.config import get_settings
@@ -17,9 +17,17 @@ router = APIRouter(prefix="/packs", tags=["packs"], dependencies=[Depends(requir
 
 class ActivateRequest(BaseModel):
     external_ref: str = Field(min_length=1, max_length=200)
-    plan: str = Field(min_length=1, max_length=64)
+    # Send exactly one: a `sku` (a product from plans.yaml with its own size) or a `plan` (that plan's default pack).
+    plan: str | None = Field(default=None, min_length=1, max_length=64)
+    sku: str | None = Field(default=None, min_length=1, max_length=64)
     payment_id: str = Field(min_length=1, max_length=200)  # your payment/event id: a replay is applied once
     purchased_at: datetime  # when the student paid (include a timezone); expiry is counted from here
+
+    @model_validator(mode="after")
+    def one_of_plan_or_sku(self) -> "ActivateRequest":
+        if (self.plan is None) == (self.sku is None):
+            raise ValueError("send exactly one of plan or sku")
+        return self
 
 
 class RevokeRequest(BaseModel):
@@ -46,6 +54,7 @@ async def activate_pack(payload: ActivateRequest, tenant: Tenant) -> dict:
         tenant,
         payload.external_ref,
         payload.plan,
+        sku=payload.sku,
         payment_id=payload.payment_id,
         purchased_at=payload.purchased_at,
     )
@@ -109,4 +118,8 @@ async def list_plans(tenant: Tenant) -> dict:
                 "llm_providers": sorted(providers),
             }
         )
-    return {"default_plan": plans.default_plan, "plans": items}
+    skus = [
+        {"name": name, "plan": sku.plan, "minutes": sku.minutes, "days": sku.days}
+        for name, sku in plans.skus.items()
+    ]
+    return {"default_plan": plans.default_plan, "plans": items, "skus": skus}

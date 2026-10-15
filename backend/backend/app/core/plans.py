@@ -48,11 +48,24 @@ class Plan(BaseModel):
         return self
 
 
+class Sku(BaseModel):
+    """A product the main app sells: it adds ``minutes`` valid for ``days`` to the student's wallet for ``plan``.
+
+    Several products can feed one wallet with different sizes (a $5, a $10 and a $20 add-on all fill the Economy
+    wallet). A plan used without a sku grants its own ``pack_minutes`` and ``pack_days``.
+    """
+
+    plan: str
+    minutes: int = Field(ge=1)
+    days: int = Field(ge=1)
+
+
 class PlansConfig(BaseModel):
     default_plan: str
     grace_seconds: int = Field(default=60, ge=0)
     profiles: dict[int, DurationProfile]
     plans: dict[str, Plan]
+    skus: dict[str, Sku] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def check_references(self) -> "PlansConfig":
@@ -62,6 +75,12 @@ class PlansConfig(BaseModel):
             for minutes in plan.durations:
                 if minutes not in self.profiles:
                     raise ValueError(f"plan '{name}' allows {minutes} minutes but profiles has no entry for {minutes}")
+        for name, sku in self.skus.items():
+            if sku.plan not in self.plans:
+                raise ValueError(f"sku '{name}' is for plan '{sku.plan}', which is not defined under plans")
+            shortest = min(self.plans[sku.plan].durations)
+            if sku.minutes < shortest:
+                raise ValueError(f"sku '{name}' grants {sku.minutes} minutes, less than one {shortest} minute interview")
         return self
 
     def plan(self, name: str | None) -> Plan:
@@ -69,6 +88,11 @@ class PlansConfig(BaseModel):
         if key not in self.plans:
             raise ValidationAppError("unknown plan", details={"plan": key, "allowed": sorted(self.plans)})
         return self.plans[key]
+
+    def sku(self, name: str) -> Sku:
+        if name not in self.skus:
+            raise ValidationAppError("unknown sku", details={"sku": name, "allowed": sorted(self.skus)})
+        return self.skus[name]
 
     def profile(self, minutes: int) -> DurationProfile:
         return self.profiles[minutes]
