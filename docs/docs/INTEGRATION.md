@@ -127,6 +127,7 @@ A student buys a **pack** of interview minutes that expires after a number of da
 |---|---|---|
 | `economy` ($10) | 150 minutes, 30 days | OpenAI GPT-6 Luna through OpenRouter, then OpenAI, Anthropic. **Never DeepSeek.** |
 | `premium` ($20) | 250 minutes, 30 days | Anthropic, then OpenAI. **Never DeepSeek.** |
+| `included_monthly` (with the monthly subscription) | 75 minutes, 35 days, 15-minute interviews only | Same as `economy`. See below. |
 
 ```yaml
 # plans.yaml
@@ -178,6 +179,39 @@ plans:
    ```
 
    Success removes that purchase's minutes and days (stacked purchases are refunded one at a time). If the student has used the pack too much it returns **409** `refund_not_allowed` and you must not refund. A chargeback is the bank's decision and cannot be refused here; the interview records (times, minutes used) are your evidence.
+
+5. **Subscription ended.** When a plan is included in a subscription rather than bought as a pack, end the pack when the
+   subscription ends (not a refund, safe to repeat, and a harmless `expired: false` if the student never had a pack):
+
+   ```bash
+   curl -sX POST http://localhost:8080/api/v1/packs/expire -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+     -d '{"external_ref": "STUDENT_HASH", "plan": "included_monthly"}'
+   # {"expired": true, "pack": {"plan":"included_monthly","active":false,"minutes_remaining":...,"days_remaining":0,...}}
+   ```
+
+   Whatever minutes were left are gone for good. If the student subscribes again, `/packs/activate` starts a fresh pack
+   (the leftover is not restored). Usage records (minutes used, interviews started) stay. Do not call `activate` for a
+   payment that was made before you expired the pack: process the subscription's events in order.
+
+### Included with a subscription (`included_monthly`)
+
+The shipped `plans.yaml` has an `included_monthly` plan: **75 minutes, 15-minute interviews only, so exactly five
+interviews**, 35 days, Economy models. It is meant to be granted with a paid monthly subscription, never sold alone.
+
+- **Grant:** on every **paid** subscription invoice (a first payment or a renewal, amount above zero) call
+  `/packs/activate` with `plan: included_monthly` and `payment_id` = the **invoice id**. Do not call it for the trial,
+  for $0 invoices or for proration invoices from plan changes: trial users get no minutes.
+- **Rollover:** unused interviews carry over for as long as the student keeps subscribing. `pack_days` (35) is longer
+  than any billing month plus a few days for payment retries, so each renewal arrives while the old pack is still
+  active and stacks. Do not shorten it below the longest billing month.
+- **End:** when the subscription ends (cancelled and the paid period over, or unpaid and cancelled), call
+  `/packs/expire`. The minutes are gone, with no refund. Until you do, a missed webhook can leave minutes usable for
+  up to 35 days after the last renewal.
+- **Refund of the subscription:** `/packs/revoke` with the same invoice id. The refund rule for this plan is wide open
+  on purpose, so it always succeeds and removes that month's minutes; the decision to refund is yours.
+- **Two balances:** a student who also bought an `economy` pack has two separate wallets. Spend the included one first
+  in your app and show both.
+- Other billing periods (weekly, quarterly) need their own plan entries; none is shipped.
 
 The refund rule in `plans.yaml` is `rule: any`: refundable while **either** at most `max_interviews_started` interview has been started **or** at most `max_minutes_used` booked minutes are used. `rule: all` needs both. Used minutes are the booked length, not the time actually spoken.
 

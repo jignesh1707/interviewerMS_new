@@ -620,3 +620,42 @@ def test_everything_above_is_inert_when_plans_are_off(client, monkeypatch):
     assert status["seconds_remaining"] is None
     assert status["grace_seconds"] is None
     assert client.get("/api/v1/packs/stu-1", headers=HEADERS).status_code == 404
+
+
+# ----------------------------------------------------------------------------- expiring a pack (subscription ended)
+
+
+def expire(client, ref="stu-1", plan="economy", expect=200):
+    response = client.post("/api/v1/packs/expire", json={"external_ref": ref, "plan": plan}, headers=HEADERS)
+    assert response.status_code == expect, response.text
+    return response.json()
+
+
+def test_expiring_a_pack_stops_interviews_and_is_not_a_refund(client):
+    buy(client, payment_id="evt_1")
+    body = expire(client)
+    assert body["expired"] is True
+    assert body["pack"]["active"] is False and body["pack"]["days_remaining"] == 0
+    refused = create(client, paid=False, expect=402)
+    assert refused["error"]["details"]["reason"] == "pack_expired"
+
+
+def test_expiring_twice_or_for_a_student_with_no_pack_is_a_harmless_no_op(client):
+    assert expire(client, ref="nobody")["expired"] is False
+    buy(client, payment_id="evt_1")
+    assert expire(client)["expired"] is True
+    assert expire(client)["expired"] is False
+
+
+def test_a_student_who_resubscribes_after_expiry_starts_from_a_fresh_pack(client):
+    buy(client, payment_id="evt_1")
+    create(client, paid=False)  # spends 15 of the 30 minutes
+    expire(client)
+    after = buy(client, payment_id="evt_2")
+    assert after["pack"]["minutes_remaining"] == 30  # the leftover 15 did not come back
+    create(client, paid=False)
+
+
+def test_expire_rejects_an_unknown_plan_and_needs_an_api_key(client):
+    expire(client, plan="platinum", expect=422)
+    assert client.post("/api/v1/packs/expire", json={}).status_code == 401

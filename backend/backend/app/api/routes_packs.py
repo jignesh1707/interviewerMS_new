@@ -28,6 +28,11 @@ class RevokeRequest(BaseModel):
     payment_id: str = Field(min_length=1, max_length=200)
 
 
+class ExpireRequest(BaseModel):
+    external_ref: str = Field(min_length=1, max_length=200)
+    plan: str = Field(min_length=1, max_length=64)
+
+
 def _packs():
     if not get_settings().plans_enabled:
         raise NotFoundError("plans are not enabled on this service")
@@ -50,6 +55,16 @@ async def activate_pack(payload: ActivateRequest, tenant: Tenant) -> dict:
 async def revoke_pack(payload: RevokeRequest, tenant: Tenant) -> dict:
     """Take a purchase back (a refund). Refused with 409 `refund_not_allowed` once the pack is used too much."""
     return await _packs().revoke(tenant, payload.external_ref, payload.plan, payment_id=payload.payment_id)
+
+
+@router.post("/expire")
+async def expire_pack(payload: ExpireRequest, tenant: Tenant) -> dict:
+    """End a student's pack now (the subscription that included it ended). Not a refund; safe to repeat.
+
+    The minutes left are gone for good: a later purchase starts a fresh pack. A student with no pack gets a harmless
+    `expired: false`, so you can call this on every cancellation without checking first.
+    """
+    return await _packs().expire(tenant, payload.external_ref, payload.plan)
 
 
 @router.get("/{external_ref}")

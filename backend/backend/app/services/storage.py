@@ -456,6 +456,21 @@ class Store:
             (minutes, minutes, utc_now(), tenant_id, external_ref, plan),
         )
 
+    def pack_expire(self, tenant_id: str, external_ref: str, plan: str, *, now: int) -> str:
+        """End a pack right now (the subscription behind it ended). Not a refund.
+
+        Minutes used and interviews started stay on the books. A purchase made later finds an expired pack, so it
+        starts a fresh one and the leftover minutes are gone. Returns "expired", "already_expired" or "not_found".
+        """
+        if self.pack_get(tenant_id, external_ref, plan) is None:
+            return "not_found"
+        changed = self.db.execute_count(
+            "UPDATE packs SET expires_at = ?, updated_at = ? "
+            "WHERE tenant_id = ? AND external_ref = ? AND plan = ? AND expires_at > ?",
+            (now, utc_now(), tenant_id, external_ref, plan, now),
+        )
+        return "expired" if changed == 1 else "already_expired"
+
     def pack_revoke(
         self,
         tenant_id: str,
