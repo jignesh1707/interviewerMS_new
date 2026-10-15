@@ -15,6 +15,12 @@ primary_region = "iad"
   PLANS_ENABLED = "true"
   REQUIRE_CONSENT = "true"
   FINISH_ASYNC = "true"       # POST /finish answers 202; the report is built in the background
+  # A hung AI call waits this long before the next provider is tried (default 60 s). Healthy Luna calls take 4-30 s,
+  # so 40 s falls back sooner without cutting off slow but working calls. The caller's own timeout must be longer.
+  LLM_TIMEOUT_SECONDS = "40"
+  # A report build with no progress for this long is taken over by the other machine (default 300 s). A normal build
+  # takes 25-35 s; a worst case with one fallback can pass two minutes, and a lower value would build it twice.
+  FINISH_STALE_SECONDS = "180"
   # Limits are per TENANT, and the whole main app is one tenant, so the defaults (20 AI-backed calls a minute, 2000 a
   # day) would cap the platform at about one interview a minute. One interview is roughly 10 to 20 such calls. These
   # are starting values for staging; size them from the load test. Per-student limits (30/min, 200/day) stay as the
