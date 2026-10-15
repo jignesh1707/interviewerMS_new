@@ -165,6 +165,12 @@ class PackService:
         )
         return {"applied": applied, "pack": await self.status(tenant_id, external_ref, plan_name)}
 
+    async def expire(self, tenant_id: str, external_ref: str, plan_name: str) -> dict[str, Any]:
+        """End a student's pack now, for example when the subscription that included it ended. Idempotent."""
+        self.plans.plan(plan_name)  # an unknown plan is a validation error, as for activate and revoke
+        outcome = await self.store.pack_expire(tenant_id, external_ref, plan_name, now=int(time.time()))
+        return {"expired": outcome == "expired", "pack": await self.status(tenant_id, external_ref, plan_name)}
+
     async def revoke(self, tenant_id: str, external_ref: str, plan_name: str, *, payment_id: str) -> dict[str, Any]:
         plan = self.plans.plan(plan_name)
         rule = plan.refund

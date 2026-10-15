@@ -249,3 +249,54 @@ def test_refund_never_removes_minutes_that_were_already_used(store):
     row = wallet(store)
     assert row["minutes_total"] == 25  # the used minutes stay on the books; nothing is left to spend
     assert row["minutes_total"] - row["minutes_used"] == 0
+
+
+# ----------------------------------------------------------------------------- expiry (subscription ended)
+
+
+def test_included_monthly_renewals_roll_unused_minutes_over(store):
+    # five 15-minute interviews a month, pack_days 35: a renewal always lands while the old pack is still active
+    key = ("t1", "stu-1", "included_monthly")
+    activate(store, payment_id="inv-1", minutes=75, days=35, at=T0, key=key)
+    store.pack_debit(*key, 15, now=T0 + 3 * DAY)
+    activate(store, payment_id="inv-2", minutes=75, days=35, at=T0 + 31 * DAY, key=key)  # a 31 day month
+    activate(store, payment_id="inv-3", minutes=75, days=35, at=T0 + 59 * DAY, key=key)  # a 28 day month
+    row = wallet(store, key)
+    assert row["minutes_total"] == 225
+    assert row["minutes_used"] == 15
+    assert row["expires_at"] == T0 + 105 * DAY
+
+
+def test_expiring_ends_the_pack_now_and_keeps_the_usage_record(store):
+    activate(store, payment_id="a", at=T0)
+    store.pack_debit(*KEY, 15, now=T0 + DAY)
+    assert store.pack_expire(*KEY, now=T0 + 10 * DAY) == "expired"
+    row = wallet(store)
+    assert row["expires_at"] == T0 + 10 * DAY
+    assert row["minutes_used"] == 15 and row["interviews_started"] == 1
+    assert store.pack_debit(*KEY, 15, now=T0 + 10 * DAY) is False  # nothing left to spend
+
+
+def test_expiring_twice_or_with_no_pack_is_harmless(store):
+    assert store.pack_expire(*KEY, now=T0) == "not_found"
+    activate(store, payment_id="a", at=T0)
+    assert store.pack_expire(*KEY, now=T0 + DAY) == "expired"
+    assert store.pack_expire(*KEY, now=T0 + 2 * DAY) == "already_expired"
+    assert wallet(store)["expires_at"] == T0 + DAY  # the second call did not move it
+
+
+def test_expiring_an_already_lapsed_pack_changes_nothing(store):
+    activate(store, payment_id="a", at=T0)
+    assert store.pack_expire(*KEY, now=T0 + 40 * DAY) == "already_expired"
+    assert wallet(store)["expires_at"] == T0 + 30 * DAY
+
+
+def test_a_purchase_after_expiry_starts_fresh_so_leftover_minutes_stay_gone(store):
+    activate(store, payment_id="a", at=T0)
+    store.pack_debit(*KEY, 15, now=T0 + DAY)
+    store.pack_expire(*KEY, now=T0 + 10 * DAY)
+    activate(store, payment_id="b", at=T0 + 12 * DAY)  # resubscribed two days later
+    row = wallet(store)
+    assert row["minutes_total"] == 150  # not 150 + 135 left over from before
+    assert row["minutes_used"] == 0 and row["interviews_started"] == 0
+    assert row["expires_at"] == T0 + 42 * DAY
