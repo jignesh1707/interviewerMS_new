@@ -151,8 +151,8 @@ async def transcribe_bytes(content: bytes, filename: str = "answer.webm") -> dic
             handle.write(content)
             tmp_path = handle.name
         result = await _transcribe_limited(tmp_path)
-    except SpeechUnavailableError:
-        raise
+    except (SpeechUnavailableError, ServiceUnavailableError):
+        raise  # keep the 503 and its Retry-After; only real failures become a 422
     except Exception as exc:  # noqa: BLE001
         logger.exception("transcription_failed filename=%s", filename)
         raise ValidationAppError(f"failed to transcribe audio: {exc}") from exc

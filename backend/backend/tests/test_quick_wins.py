@@ -165,3 +165,31 @@ async def test_preload_failure_does_not_leave_the_service_unready(monkeypatch):
     monkeypatch.setattr(stt, "_get_model", broken)
     await stt.begin_preload()
     assert stt.preload_pending() is False
+
+
+async def test_busy_machine_is_a_503_through_the_public_entry_point(monkeypatch):
+    # transcribe_bytes used to re-label the busy error as a 422 "failed to transcribe", losing Retry-After.
+    settings = get_settings()
+    monkeypatch.setattr(settings, "stt_max_concurrent", 1)
+    monkeypatch.setattr(settings, "stt_queue_timeout_seconds", 0.1)
+    stt._slots = None
+    release = threading.Event()
+
+    async def no_model():
+        return None
+
+    def blocking(_path):
+        release.wait(5)
+        return {"text": "ok"}
+
+    monkeypatch.setattr(stt, "_get_model", no_model)
+    monkeypatch.setattr(stt, "_transcribe_sync", blocking)
+    first = asyncio.create_task(stt.transcribe_bytes(b"audio", "a.wav"))
+    await asyncio.sleep(0.05)
+    with pytest.raises(ServiceUnavailableError) as busy:
+        await stt.transcribe_bytes(b"audio", "b.wav")
+    assert busy.value.status_code == 503
+    assert busy.value.headers == {"Retry-After": "5"}
+
+    release.set()
+    assert (await first)["text"] == "ok"
