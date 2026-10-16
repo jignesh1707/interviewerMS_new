@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any
 
 import httpx
@@ -69,13 +70,19 @@ class AnthropicClient:
             "anthropic-version": self.version,
             "Content-Type": "application/json",
         }
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            try:
-                response = await client.post(url, json=payload, headers=headers)
-            except httpx.TimeoutException as exc:
-                raise ProviderCallError(f"{self.name} request timed out") from exc
-            except httpx.HTTPError as exc:
-                raise ProviderCallError(f"{self.name} transport error: {redact_secrets(str(exc))}") from exc
+        try:
+            # httpx's timeout limits each network operation, not the whole call, so a provider that keeps the connection
+            # alive with small writes (OpenRouter does while a busy upstream thinks) could hold one request open for
+            # minutes. asyncio.timeout puts a deadline on the whole call, so the router falls back after `timeout`.
+            async with asyncio.timeout(self.timeout):
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    response = await client.post(url, json=payload, headers=headers)
+        except TimeoutError:
+            raise ProviderCallError(f"{self.name} request timed out") from None
+        except httpx.TimeoutException as exc:
+            raise ProviderCallError(f"{self.name} request timed out") from exc
+        except httpx.HTTPError as exc:
+            raise ProviderCallError(f"{self.name} transport error: {redact_secrets(str(exc))}") from exc
 
         if response.status_code >= 400:
             retryable = response.status_code in (408, 409, 429) or response.status_code >= 500
