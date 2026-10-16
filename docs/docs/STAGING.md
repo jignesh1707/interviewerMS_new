@@ -152,6 +152,45 @@ answered 5xx the first time. `dead` rows are webhooks the service gave up on.
   `X-Interview-Delivery`, polls for interviews it is still waiting on, calls `/packs/activate` from the verified
   Stripe webhook, and calls `/packs/revoke` on refunds.
 
+## 9. Letting Fly add machines under load (optional)
+
+`fly.toml` runs **one** machine and lets Fly's proxy start spare machines when the running ones are busy, and stop them
+when they are idle (`auto_stop_machines = "stop"`, `min_machines_running = 1`, `soft_limit = 6`). Fly can only start
+machines that already exist, so create the spares once and let them stop:
+
+```bash
+fly deploy -a interviewer-ms-staging --no-public-ips          # applies the new fly.toml
+fly scale count 3 -a interviewer-ms-staging                   # one always on, two spares
+fly status -a interviewer-ms-staging                          # wait about 5 to 10 minutes idle, then check again
+```
+
+Expected when idle: one machine `started`, two `stopped`. If all three stay started, the proxy has not judged them
+excess yet; wait longer, and check `fly logs` for autostop lines.
+
+**The test.** Run a load from a machine that is not one of these (the main app's staging machine works, it reaches
+the service over flycast) and watch the machines while it runs:
+
+```bash
+# terminal 1: sample the machine states every 10 seconds
+while true; do date -u +%T; fly status -a interviewer-ms-staging | grep -E "started|stopped|created"; sleep 10; done
+# terminal 2: 10 students, then 25 (use the staging_smoke.py retry-on-503 behaviour)
+fly ssh console -a <caller app> -C "python /tmp/load.py 10"
+```
+
+What to look for:
+
+| Observation | Meaning |
+|---|---|
+| A spare goes `stopped` to `started` within about a minute of the load starting | auto-start works through flycast |
+| The students that arrive in the first minute see a few 503 "busy" and the script retries them | the expected cost of a warm-up of about a minute |
+| Spares go back to `stopped` some minutes after the load ends | auto-stop works |
+| Every student passes with the retries | the settings are good enough for this size of burst |
+| A student fails with 503 after all retries | the burst was faster than a machine can warm up: raise `min_machines_running` or lower `soft_limit` |
+| A report goes missing after a machine stopped | the other machine takes it over after `FINISH_STALE_SECONDS` (180 s); note how often it happens |
+
+Rate limits are counted per machine while Redis is not configured, so several running machines allow more calls than
+one. At launch size this does not matter; add Redis (`REDIS_URL`) before relying on the limits as a cost ceiling.
+
 ## Roll back
 
 ```bash
