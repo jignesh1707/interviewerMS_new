@@ -58,8 +58,8 @@ student can say anything aloud. Do not describe the data as anonymous.
 | Fly.io | Hosting the service (region of your choice) | Everything in section 2, in memory and in transit | All plans |
 | Supabase | Postgres database (region of your choice) | Everything stored in section 2 | All plans |
 | Upstash | Redis | Rate-limit counters, keyed by tenant and student reference; expire after a minute or two days | All plans |
-| OpenRouter | AI model gateway; forwards GPT-6 Luna to OpenAI (the only host it lists for that model) | Redacted resume text and answers | Economy plan, first choice |
-| OpenAI | AI model (GPT-6 Luna via OpenRouter, or directly as a fallback) | Redacted resume text and answers | Fallback on Economy; fallback on Premium |
+| OpenRouter | AI model gateway; forwards GPT-5.6 Luna to OpenAI (the only host it lists for that model) | Redacted resume text and answers | Fallback on Economy |
+| OpenAI | AI model (GPT-6 Luna called directly) | Redacted resume text and answers | Economy plan, first choice; fallback on Premium |
 | Anthropic | AI model | Redacted resume text and answers | Premium plan first; Economy only as a last fallback |
 
 `GET /api/v1/plans` returns, for each plan, the providers that may process its data, computed from the configuration

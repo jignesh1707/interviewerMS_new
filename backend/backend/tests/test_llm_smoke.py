@@ -61,13 +61,12 @@ async def test_a_failing_model_is_reported_with_its_error_and_does_not_stop_the_
 
 
 @pytest.mark.asyncio
-async def test_the_economy_profile_is_the_default_and_covers_gpt_6_luna():
-    router, providers = build(openrouter=Provider("openrouter"))
+async def test_the_economy_profile_is_the_default_and_covers_both_luna_routes():
+    router, providers = build(openai=Provider("openai"), openrouter=Provider("openrouter"))
     results = await smoke(router)
     assert {r["profile"] for r in results} == {"economy"}
-    assert any(
-        r["provider"] == "openrouter" and r["model"] == "openai/gpt-6-luna" and r["status"] == "ok" for r in results
-    )
+    ok = {(r["provider"], r["model"]) for r in results if r["status"] == "ok"}
+    assert {("openai", "gpt-6-luna"), ("openrouter", "openai/gpt-5.6-luna")} <= ok
     assert not any(r["provider"] == "deepseek" for r in results)
 
 

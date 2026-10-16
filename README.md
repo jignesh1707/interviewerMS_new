@@ -23,8 +23,8 @@ webhook callbacks.
 
 ## Key design points
 
-- **Cost-aware model router.** Platforms are tried in a fixed fallback order: OpenRouter
-  (OpenAI GPT-6 Luna), then OpenAI, then Anthropic. Simple tasks stay on cheaper models inside that order; complex
+- **Cost-aware model router.** Platforms are tried in a fixed fallback order: OpenAI
+  (GPT-6 Luna), then OpenRouter (GPT-5.6 Luna), then Anthropic. Simple tasks stay on cheaper models inside that order; complex
   tasks use stronger models. If the preferred provider is down or rate-limited, the router fails
   over to the next provider, with a circuit breaker so a broken provider is not hammered.
 - **Python-first.** Parsing, metrics, heuristic scoring, aggregation and fallbacks are implemented
@@ -87,7 +87,7 @@ docs/                           Integration and routing guides
 INSTALL_VOICE=1 ./scripts/setup_backend.sh
 ```
 
-Add at least one provider key to `backend/.env`. The default (Economy) setup tries OpenRouter (GPT-6 Luna) first, then OpenAI, then Anthropic (providers without a key are skipped):
+Add at least one provider key to `backend/.env`. The default (Economy) setup tries OpenAI (GPT-6 Luna) first, then OpenRouter (GPT-5.6 Luna), then Anthropic (providers without a key are skipped):
 
 ```bash
 OPENROUTER_API_KEY=...
@@ -254,7 +254,7 @@ To keep running costs low:
 
 - Resume and JD parsing, metrics and heuristic scoring are pure Python.
 - Cheap-tier models handle short follow-ups, tagging and coaching hints.
-- Fallback order is OpenRouter (GPT-6 Luna), then OpenAI, then Anthropic, so a later candidate is only used when earlier ones fail or are unconfigured.
+- Fallback order is OpenAI (GPT-6 Luna), then OpenRouter (GPT-5.6 Luna), then Anthropic, so a later candidate is only used when earlier ones fail or are unconfigured.
 - The `premium` tier (GPT-6 Luna on Economy, Claude Sonnet 5.5 on Premium) is used only for final scoring and the recruiter narrative.
 - Per-answer LLM analysis can be disabled with `config.analyze_per_answer = false`, which leaves
   Python heuristics in place.

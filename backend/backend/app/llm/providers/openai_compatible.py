@@ -56,16 +56,20 @@ class OpenAICompatibleClient:
             raise ProviderCallError(f"{self.name} is not configured or endpoint is not approved", retryable=False)
 
         url = f"{self.base_url}/chat/completions"
+        options = options or {}
         payload: dict[str, Any] = {
             "model": model,
             "messages": [message.to_dict() for message in messages],
-            "temperature": temperature,
-            "max_tokens": max_tokens,
             "stream": False,
             **self.extra_body,
         }
+        # OpenAI's reasoning models (called directly, not through OpenRouter) refuse a non-default temperature and
+        # want the output limit as `max_completion_tokens`; models.yaml switches both per model.
+        if not options.get("omit_temperature"):
+            payload["temperature"] = temperature
+        payload[options.get("max_tokens_field") or "max_tokens"] = max_tokens
         # Per-model request fields from models.yaml (for example reasoning_effort). The core fields stay fixed.
-        for key, value in ((options or {}).get("body") or {}).items():
+        for key, value in (options.get("body") or {}).items():
             if key not in {"model", "messages", "stream"}:
                 payload[key] = value
         headers = {

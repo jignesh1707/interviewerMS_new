@@ -30,27 +30,41 @@ def _router(**overrides):
     return ModelRouter(settings=settings, config=load_router_config(MODELS_YAML))
 
 
-def test_yaml_runs_every_economy_tier_on_gpt_6_luna_through_openrouter():
+def test_yaml_falls_back_to_gpt_5_6_luna_through_openrouter_in_every_economy_tier():
+    config = load_router_config(MODELS_YAML)
+    for tier in ("cheap", "standard", "premium"):
+        second = config.candidates(tier)[1]
+        assert (second.provider, second.model) == ("openrouter", "openai/gpt-5.6-luna")
+        assert (second.input_price, second.output_price) == (0.20, 1.20)
+        assert second.options == {"body": {"reasoning_effort": "low"}}
+        assert all(c.provider != "deepseek" for c in config.candidates(tier))
+
+
+def test_yaml_calls_gpt_6_luna_directly_as_a_reasoning_model():
     config = load_router_config(MODELS_YAML)
     for tier in ("cheap", "standard", "premium"):
         first = config.candidates(tier)[0]
-        assert (first.provider, first.model) == ("openrouter", "openai/gpt-6-luna")
+        assert (first.provider, first.model) == ("openai", "gpt-6-luna")
         assert (first.input_price, first.output_price) == (0.10, 0.50)
-        assert all(c.provider != "deepseek" for c in config.candidates(tier))
+        assert first.options == {
+            "omit_temperature": True,
+            "max_tokens_field": "max_completion_tokens",
+            "body": {"reasoning_effort": "low"},
+        }
 
 
 def test_each_task_resolves_to_the_intended_tier_and_model():
     config = load_router_config(MODELS_YAML)
     expected = {
-        "resume_summary": ("cheap", "openai/gpt-6-luna"),
-        "jd_metadata": ("cheap", "openai/gpt-6-luna"),
-        "followup_generation": ("cheap", "openai/gpt-6-luna"),
-        "answer_coaching": ("cheap", "openai/gpt-6-luna"),
-        "question_generation": ("standard", "openai/gpt-6-luna"),
-        "tips_generation": ("standard", "openai/gpt-6-luna"),
-        "answer_analysis": ("standard", "openai/gpt-6-luna"),
-        "final_scoring": ("premium", "openai/gpt-6-luna"),
-        "report_narrative": ("premium", "openai/gpt-6-luna"),
+        "resume_summary": ("cheap", "gpt-6-luna"),
+        "jd_metadata": ("cheap", "gpt-6-luna"),
+        "followup_generation": ("cheap", "gpt-6-luna"),
+        "answer_coaching": ("cheap", "gpt-6-luna"),
+        "question_generation": ("standard", "gpt-6-luna"),
+        "tips_generation": ("standard", "gpt-6-luna"),
+        "answer_analysis": ("standard", "gpt-6-luna"),
+        "final_scoring": ("premium", "gpt-6-luna"),
+        "report_narrative": ("premium", "gpt-6-luna"),
     }
     assert set(config.tasks) == set(expected)
     for task, (tier, model) in expected.items():
@@ -92,10 +106,10 @@ def test_openrouter_key_is_registered_for_log_redaction():
     assert OPENROUTER_KEY in _router()._secret_values()
 
 
-async def test_falls_back_from_gpt_6_luna_on_openrouter_to_openai_direct():
+async def test_falls_back_from_gpt_6_luna_direct_to_gpt_5_6_luna_on_openrouter():
     router = _router()
-    openrouter = FakeProvider("openrouter", fail=True)
-    openai = FakeProvider("openai")
+    openai = FakeProvider("openai", fail=True)
+    openrouter = FakeProvider("openrouter")
     router._providers = {
         "deepseek": FakeProvider("deepseek"),
         "openrouter": openrouter,
@@ -104,10 +118,10 @@ async def test_falls_back_from_gpt_6_luna_on_openrouter_to_openai_direct():
     }
     router.provider_configured = lambda name: name in {"openrouter", "openai"}
     result = await router.complete("question_generation", _messages())
-    assert result.provider == "openai"
-    assert result.model == "gpt-4o-mini"
-    assert openrouter.calls == 1 and openai.calls == 1
-    assert router.health("openrouter").consecutive_failures == 1
+    assert result.provider == "openrouter"
+    assert result.model == "openai/gpt-5.6-luna"
+    assert openai.calls == 1 and openrouter.calls == 1
+    assert router.health("openai").consecutive_failures == 1
 
 
 async def test_deepseek_is_never_tried_by_the_shipped_economy_setup():
@@ -193,8 +207,9 @@ def test_client_without_extra_body_defaults_to_empty():
 def test_every_luna_entry_runs_at_low_reasoning_effort():
     config = load_router_config(MODELS_YAML)
     for tier in ("cheap", "standard", "premium"):
-        first = config.candidates(tier)[0]
-        assert first.options == {"body": {"reasoning_effort": "low"}}
+        lunas = [c for c in config.candidates(tier) if "luna" in c.model]
+        assert len(lunas) == 2
+        assert all(c.options["body"] == {"reasoning_effort": "low"} for c in lunas)
 
 
 async def test_model_options_body_reaches_the_request_but_cannot_replace_core_fields(monkeypatch):
@@ -214,3 +229,22 @@ async def test_no_options_leaves_the_request_unchanged(monkeypatch):
     with bound_provider_call(task="question_generation", provider="openrouter", model="openai/gpt-6-luna"):
         await client.complete(_messages(), "openai/gpt-6-luna", 0.4, 256)
     assert "reasoning_effort" not in _Client.sent["json"]
+    assert _Client.sent["json"]["temperature"] == 0.4
+    assert _Client.sent["json"]["max_tokens"] == 256
+    assert "max_completion_tokens" not in _Client.sent["json"]
+
+
+async def test_reasoning_model_options_drop_temperature_and_rename_the_output_limit(monkeypatch):
+    monkeypatch.setattr("app.llm.providers.openai_compatible.httpx.AsyncClient", _Client)
+    client = OpenAICompatibleClient("openai", "https://api.openai.com/v1", "k", 5)
+    options = {
+        "omit_temperature": True,
+        "max_tokens_field": "max_completion_tokens",
+        "body": {"reasoning_effort": "low"},
+    }
+    with bound_provider_call(task="question_generation", provider="openai", model="gpt-6-luna"):
+        await client.complete(_messages(), "gpt-6-luna", 0.4, 256, options=options)
+    sent = _Client.sent["json"]
+    assert "temperature" not in sent and "max_tokens" not in sent
+    assert sent["max_completion_tokens"] == 256
+    assert sent["reasoning_effort"] == "low" and sent["model"] == "gpt-6-luna"

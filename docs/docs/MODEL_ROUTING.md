@@ -4,7 +4,7 @@ The router lives in `backend/app/llm/router.py` and is configured by `backend/mo
 
 ## Concepts
 
-- **Tier**: an ordered list of `{provider, model}` candidates. In the shipped Economy setup the order is OpenAI GPT-6 Luna through OpenRouter, then OpenAI directly, then Anthropic.
+- **Tier**: an ordered list of `{provider, model}` candidates. In the shipped Economy setup the order is OpenAI GPT-6 Luna called directly, then GPT-5.6 Luna through OpenRouter, then Anthropic.
 - **Task**: a named unit of work (`question_generation`, `final_scoring`, ...).
 - **Task map**: assigns each task to a tier, so simple work never reaches an expensive model.
 - **Circuit breaker**: a provider that keeps failing is temporarily removed from the candidate list.
@@ -47,8 +47,9 @@ default_tier: standard
 
 Rules:
 
-- Candidate order inside a tier is the fallback order. The shipped Economy order is OpenRouter (GPT-6 Luna), then OpenAI, then Anthropic.
-- OpenRouter is called at `https://openrouter.ai/api/v1` with the model id `openai/gpt-6-luna` ($0.10 in / $0.50 out per million tokens, checked 2026-10-08; OpenAI is the only host it lists). By default requests carry `provider.data_collection = deny` (`OPENROUTER_DATA_COLLECTION`), so OpenRouter only routes to upstream hosts that do not retain or train on prompts. If no such host is available the call fails and routing moves on.
+- Candidate order inside a tier is the fallback order. The shipped Economy order is OpenAI directly (GPT-6 Luna), then OpenRouter (GPT-5.6 Luna), then Anthropic. The fallback is a different model on a different route, so one outage does not take out both.
+- OpenAI is called directly with the model id `gpt-6-luna` as a reasoning model: no `temperature`, the output limit sent as `max_completion_tokens`, `reasoning_effort: low` (the `omit_temperature` and `max_tokens_field` options in models.yaml). Its price is assumed equal to OpenRouter's $0.10 in / $0.50 out; check it against OpenAI's list.
+- OpenRouter is called at `https://openrouter.ai/api/v1` with the model id `openai/gpt-5.6-luna` ($0.20 in / $1.20 out per million tokens, checked 2026-10-16; OpenAI is the only host it lists). By default requests carry `provider.data_collection = deny` (`OPENROUTER_DATA_COLLECTION`), so OpenRouter only routes to upstream hosts that do not retain or train on prompts. If no such host is available the call fails and routing moves on.
 - Prices are only used for the cost estimate reported in `/api/v1/models` and `routing_trace`; they
   are not used for routing decisions. Update them to match current provider pricing.
 - Set `priority` on a candidate to override YAML order (lower is tried first).
@@ -69,7 +70,7 @@ This is useful for forcing a higher tier on an important candidate without chang
 with its own `cheap`, `standard` and `premium` lists. `plans.yaml` picks one per plan with `llm_profile`. The shipped
 setup:
 
-- `economy`: GPT-6 Luna through OpenRouter for every tier, then OpenAI (gpt-4o-mini / gpt-4o), then Anthropic. No DeepSeek.
+- `economy`: GPT-6 Luna at OpenAI directly for every tier, then GPT-5.6 Luna through OpenRouter, then Anthropic. No DeepSeek.
 - `premium`: Anthropic (Haiku 4.5 for light work, Sonnet 5.5 for the rest), then OpenAI. No DeepSeek.
 
 Rules:
