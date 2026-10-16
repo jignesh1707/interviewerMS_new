@@ -1,8 +1,9 @@
 # Model routing configuration.
 #
 # Two PROFILES, one per plan family (plans.yaml picks a profile with `llm_profile`):
-#   economy  (the top-level `tiers` below, also the default): OpenAI GPT-6 Luna through OpenRouter first, then OpenAI
-#            directly, then Anthropic. No DeepSeek.
+#   economy  (the top-level `tiers` below, also the default): OpenAI GPT-6 Luna called directly first, then GPT-5.6
+#            Luna through OpenRouter (a different model on a different route, so one outage does not take out both),
+#            then Anthropic. No DeepSeek.
 #   premium  (`profiles.premium` at the bottom): Anthropic first, then OpenAI.
 # Within every profile the fallback order is the YAML order, unless `priority` is set (lower is tried first).
 # Fallbacks never leave a profile. plans.yaml also lists the providers a plan may use (`llm_allowed_providers`) and
@@ -10,22 +11,26 @@
 # change which companies see student data, update the privacy policy and consent text in the main app too.
 #
 # Prices are USD per 1,000,000 tokens and are used for cost estimates only. Keep them current: they drive the
-# estimate in /api/v1/models. GPT-6 Luna prices are OpenRouter's standard (non-flex) endpoint, checked 2026-10-08:
-# $0.10 in / $0.50 out (they double above 272k prompt tokens, which an interview never reaches). OpenAI is the only
-# host OpenRouter lists for it. Anthropic prices are first-party list prices (checked 2026-09). The direct OpenAI
-# names and prices (gpt-4o-mini, gpt-4o) have NOT been checked against OpenAI's current list; check them before
-# relying on the fallback.
+# estimate in /api/v1/models. OpenRouter's public catalogue (checked 2026-10-16): openai/gpt-6-luna $0.10 in / $0.50
+# out, openai/gpt-5.6-luna $0.20 in / $1.20 out; OpenAI is the only host it lists for either. GPT-6 Luna called
+# directly at OpenAI is assumed to cost the same as through OpenRouter: check it against OpenAI's price list.
+# Anthropic prices are first-party list prices (checked 2026-09). The direct OpenAI names and prices used by the
+# premium profile (gpt-4o-mini, gpt-4o) have NOT been checked against OpenAI's current list.
 #
 # A provider with no API key in .env is skipped automatically, so unused providers cost nothing.
 #
-# GPT-6 Luna runs with `reasoning_effort: low` (set through `options` below). Left at its default, a staging test on
-# 2026-10-15 saw calls of 20 s to over 2 minutes with reasoning tokens in the output; with low effort the same request
-# took about 4 to 5 s and used no reasoning tokens. Quality is unchanged only if the reports read as good: compare them.
+# The Luna models run with `reasoning_effort: low` (set through `options` below). Left at its default, a staging test
+# on 2026-10-15 saw calls of 20 s to over 2 minutes with reasoning tokens in the output; with low effort the same
+# request took about 4 to 5 s and used no reasoning tokens. Quality is unchanged only if the reports read as good.
 #
-# `options` (optional, per model) tweak the request. For Anthropic's newer models:
-#   omit_temperature: they reject a non-default temperature.
-#   body.thinking {type: between_tools}: turns thinking off (it is on by default and its tokens are billed as output).
-#   body.output_config.effort: low | medium | high. Haiku 4.5 does not accept `effort`, so it has no options.
+# `options` (optional, per model) tweak the request.
+#   omit_temperature: the model rejects a non-default temperature (Anthropic's newer models; OpenAI's reasoning
+#                     models called directly).
+#   max_tokens_field: the name of the output limit (OpenAI's reasoning models called directly want
+#                     max_completion_tokens; OpenRouter accepts the usual max_tokens).
+#   body: extra request fields. For Anthropic: thinking {type: between_tools} turns thinking off (it is on by default
+#         and its tokens are billed as output) and output_config.effort is low | medium | high (Haiku 4.5 does not
+#         accept `effort`, so it has no options). For Luna: reasoning_effort.
 # Run `python -m app.llm_smoke --profile premium` with real keys to check these against the live API.
 #
 # Jobs are matched to a tier by the `tasks` map at the bottom:
@@ -36,18 +41,22 @@
 tiers:
   # High-volume, short-output work: tagging, follow-up questions, coaching hints.
   cheap:
-    - provider: openrouter
-      model: openai/gpt-6-luna
+    - provider: openai
+      model: gpt-6-luna
       input_price: 0.10
       output_price: 0.50
       priority: 0
-      options: &luna_options
+      options: &luna_direct
+        omit_temperature: true
+        max_tokens_field: max_completion_tokens
         body: {reasoning_effort: low}
-    - provider: openai
-      model: gpt-4o-mini
-      input_price: 0.15
-      output_price: 0.60
+    - provider: openrouter
+      model: openai/gpt-5.6-luna
+      input_price: 0.20
+      output_price: 1.20
       priority: 1
+      options: &luna_openrouter
+        body: {reasoning_effort: low}
     - provider: anthropic
       model: claude-haiku-4-5
       input_price: 1.00
@@ -56,17 +65,18 @@ tiers:
 
   # Core structured generation: STAR question sets, per-answer analysis, tips.
   standard:
-    - provider: openrouter
-      model: openai/gpt-6-luna
+    - provider: openai
+      model: gpt-6-luna
       input_price: 0.10
       output_price: 0.50
       priority: 0
-      options: *luna_options
-    - provider: openai
-      model: gpt-4o-mini
-      input_price: 0.15
-      output_price: 0.60
+      options: *luna_direct
+    - provider: openrouter
+      model: openai/gpt-5.6-luna
+      input_price: 0.20
+      output_price: 1.20
       priority: 1
+      options: *luna_openrouter
     - provider: anthropic
       model: claude-sonnet-5-5
       input_price: 2.00
@@ -80,17 +90,18 @@ tiers:
 
   # High-stakes reasoning: final scoring and recruiter narrative.
   premium:
-    - provider: openrouter
-      model: openai/gpt-6-luna
+    - provider: openai
+      model: gpt-6-luna
       input_price: 0.10
       output_price: 0.50
       priority: 0
-      options: *luna_options
-    - provider: openai
-      model: gpt-4o
-      input_price: 2.50
-      output_price: 10.00
+      options: *luna_direct
+    - provider: openrouter
+      model: openai/gpt-5.6-luna
+      input_price: 0.20
+      output_price: 1.20
       priority: 1
+      options: *luna_openrouter
     - provider: anthropic
       model: claude-sonnet-5-5
       input_price: 2.00

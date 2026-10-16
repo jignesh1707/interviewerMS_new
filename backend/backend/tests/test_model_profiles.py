@@ -57,12 +57,13 @@ def test_premium_profile_only_lists_us_providers_and_leads_with_anthropic():
     assert config.providers_in("premium") <= US_ONLY
 
 
-def test_economy_profile_leads_with_gpt_6_luna_through_openrouter():
+def test_economy_profile_leads_with_gpt_6_luna_direct_then_gpt_5_6_luna_through_openrouter():
     config = load_router_config(MODELS_YAML)
     for tier in ("cheap", "standard", "premium"):
         assert config.candidates(tier, profile="economy") == config.candidates(tier)
-        first = config.candidates(tier, profile=None)[0]
-        assert (first.provider, first.model) == ("openrouter", "openai/gpt-6-luna")
+        order = [(c.provider, c.model) for c in config.candidates(tier, profile=None)]
+        assert order[:2] == [("openai", "gpt-6-luna"), ("openrouter", "openai/gpt-5.6-luna")]
+        assert order[2][0] == "anthropic"
     assert config.providers_in("economy") == {"openrouter", "openai", "anthropic"}
 
 
@@ -87,10 +88,10 @@ async def test_each_profile_is_served_by_its_own_first_choice():
     economy = await router.complete("answer_analysis", messages(), profile="economy")
     premium = await router.complete("answer_analysis", messages(), profile="premium")
     default = await router.complete("answer_analysis", messages())
-    assert economy.provider == "openrouter" and default.provider == "openrouter"
+    assert economy.provider == "openai" and default.provider == "openai"
     assert premium.provider == "anthropic"
     assert premium.profile == "premium" and economy.profile == "economy"
-    assert len(providers["openrouter"].calls) == 2 and len(providers["anthropic"].calls) == 1
+    assert len(providers["openai"].calls) == 2 and len(providers["anthropic"].calls) == 1
 
 
 def _misconfigured() -> RouterConfig:
