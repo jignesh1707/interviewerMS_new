@@ -74,9 +74,10 @@ primary_region = "iad"
     grace_period = "60s"   # Fly caps this at 60 s. The speech model loads in the background; /ready is 503 until then
 
 # Whisper base (int8) plus the API need ~1 GB under load; 2 GB leaves headroom for concurrent transcriptions. Two shared
-# vCPUs: staging showed that ONE shared vCPU is too small even for 15 students answering at once (8 of 15 passed, AI calls
-# stalled for minutes because the machine was starved of CPU), while two shared vCPUs passed 10 of 10. A shared CPU is also
-# throttled after a few seconds of sustained work; the answer when speech is constant is `fly scale vm performance-2x`.
+# vCPUs for now. Staging with one shared vCPU failed at 15 simultaneous students, but those runs were dominated by AI calls
+# that were never cut off (fixed separately: a deadline on the whole call), so whether one vCPU is enough is to be re-tested.
+# A shared CPU is throttled after a few seconds of sustained work; the answer when speech is constant is
+# `fly scale vm performance-2x`.
 [[vm]]
   size = "shared-cpu-2x"
   memory = "2gb"
