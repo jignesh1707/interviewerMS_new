@@ -39,14 +39,21 @@ primary_region = "iad"
 [[services]]
   protocol = "tcp"
   internal_port = 8080
-  auto_stop_machines = "off"     # interviews hold in-flight state; keep machines running
+  # Capacity follows load. One machine always runs. The others are created once (`fly scale count 3`) and stay stopped
+  # until Fly's proxy sees every running machine at the soft limit below; it then starts one, and stops idle ones
+  # again. Interview state lives in Postgres, not in the machine, so stopping one loses nothing; the only thing in a
+  # machine's memory is a report being built, and if a machine is stopped during that, another takes it over after
+  # FINISH_STALE_SECONDS. A started machine needs about a minute to load the speech model, so this absorbs a gradual
+  # rise in students, not a burst in the same second. See docs/docs/STAGING.md section 10 for the test.
+  # For a fixed number of always-on machines set auto_stop_machines = "off" and min_machines_running = that number.
+  auto_stop_machines = "stop"
   auto_start_machines = true
-  min_machines_running = 2
+  min_machines_running = 1
 
   [services.concurrency]
     type = "requests"
-    soft_limit = 20
-    hard_limit = 40
+    soft_limit = 6     # each machine transcribes 2 answers at once; beyond about 6 requests in flight, add a machine
+    hard_limit = 20
 
   [[services.ports]]
     port = 80
@@ -66,7 +73,11 @@ primary_region = "iad"
     timeout = "5s"
     grace_period = "60s"   # Fly caps this at 60 s. The speech model loads in the background; /ready is 503 until then
 
-# Whisper base (int8) plus the API need ~1 GB under load; 2 GB leaves headroom for concurrent transcriptions.
+# Whisper base (int8) plus the API need ~1 GB under load; 2 GB leaves headroom for concurrent transcriptions. Two shared
+# vCPUs for now. Staging with one shared vCPU failed at 15 simultaneous students, but those runs were dominated by AI calls
+# that were never cut off (fixed separately: a deadline on the whole call), so whether one vCPU is enough is to be re-tested.
+# A shared CPU is throttled after a few seconds of sustained work; the answer when speech is constant is
+# `fly scale vm performance-2x`.
 [[vm]]
   size = "shared-cpu-2x"
   memory = "2gb"
