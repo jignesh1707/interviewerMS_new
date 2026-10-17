@@ -19,6 +19,7 @@ from app.schemas.interview import (
     SkipRequest,
     SkipResponse,
 )
+from app.services import interview_service
 from app.services.interview_service import get_interview_service
 from app.services.storage import get_async_store
 from app.voice import stt
@@ -162,6 +163,7 @@ async def submit_audio_answer(
     service = get_interview_service()
     interview = await service.ensure_can_answer(interview)  # paused or out of time: refused before any transcription
     content = await read_capped(audio, get_settings().stt_max_upload_mb * 1024 * 1024, "audio")
+    received_at = interview_service.utcnow()  # upload done; transcription and checking time is given back
     filename = audio.filename or "answer.webm"
     transcription = await stt.transcribe_bytes(content, filename)
     service.enforce_answer_caps(transcript="", duration_seconds=transcription.get("duration_seconds"))
@@ -174,6 +176,7 @@ async def submit_audio_answer(
         question_index=question_index,
         duration_seconds=duration,
         audio_path=audio_path,
+        received_at=received_at,
     )
     result["transcript_meta"] = {
         "language": transcription.get("language"),
