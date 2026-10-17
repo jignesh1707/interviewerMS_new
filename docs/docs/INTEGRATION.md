@@ -150,9 +150,9 @@ A student gets a **pack** of interview minutes that expires after a number of da
 ```yaml
 # plans.yaml
 profiles:                       # what each interview length contains
-  15: {question_count: 7, max_followups: 2}
-  20: {question_count: 9, max_followups: 3}
-  25: {question_count: 12, max_followups: 3}
+  15: {question_count: 5, max_followups: 1}
+  20: {question_count: 7, max_followups: 2}
+  25: {question_count: 9, max_followups: 3}
 plans:
   premium:
     pack_minutes: 250
