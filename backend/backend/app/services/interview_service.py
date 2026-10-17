@@ -42,6 +42,11 @@ from app.services.text_analysis import aggregate_heuristic_scores, analyze_trans
 logger = get_logger(__name__)
 
 
+def utcnow() -> datetime:
+    """The service's clock (one place, so tests can move it)."""
+    return datetime.now(timezone.utc)
+
+
 @dataclass(frozen=True)
 class LLMPolicy:
     """Where an interview's data may be sent: a model profile and an optional hard list of allowed providers."""
@@ -187,7 +192,7 @@ class InterviewService:
 
         if reservation is not None:
             # The clock starts once the questions are ready, so slow generation never eats the student's time.
-            deadline = datetime.now(timezone.utc) + timedelta(
+            deadline = utcnow() + timedelta(
                 minutes=reservation.minutes, seconds=reservation.grace_seconds
             )
             config.update(
@@ -300,7 +305,11 @@ class InterviewService:
         question_index: int | None = None,
         duration_seconds: float | None = None,
         audio_path: str | None = None,
+        received_at: datetime | None = None,
     ) -> dict[str, Any]:
+        """Record one answer. ``received_at`` (default: now) is when it reached the service; the time from then
+        until it is checked is added back to the deadline."""
+        received_at = received_at or utcnow()
         interview = await self.store.get_interview(interview_id)
         questions = list(interview.get("questions") or [])
         if not questions:
@@ -309,7 +318,7 @@ class InterviewService:
             raise ValidationAppError("transcript is empty; no speech detected")
         if interview.get("status") == "completed":
             raise ConflictError("interview is already completed; no more answers can be submitted")
-        interview = await self.ensure_can_answer(interview)
+        interview = await self.ensure_can_answer(interview, received_at)
         self.enforce_answer_caps(transcript=transcript, duration_seconds=duration_seconds)
 
         resolved_index, target = self._resolve_question(questions, question_id, question_index)
@@ -398,10 +407,13 @@ class InterviewService:
             router=router_trace or None,
             duration_seconds=duration_seconds,
         )
+        changes: dict[str, Any] = {"status": "in_progress"}
         if followup_question:
-            await self.store.update_interview(interview_id, status="in_progress", questions=questions)
-        else:
-            await self.store.update_interview(interview_id, status="in_progress")
+            changes["questions"] = questions
+        credited = await self._credit_checking_time(interview_id, received_at)
+        if credited is not None:
+            changes["config"] = credited
+        await self.store.update_interview(interview_id, **changes)
 
         answered_ids = {item["question_id"] for item in existing_answers if item.get("question_id")}
         answered_ids.add(target["id"])
@@ -456,7 +468,7 @@ class InterviewService:
 
     async def _settle_pause(self, interview: dict[str, Any]) -> dict[str, Any]:
         """Write down a pause that has ended by itself, so every later check sees the moved deadline."""
-        now = datetime.now(timezone.utc)
+        now = utcnow()
         config = dict(interview.get("config") or {})
         deadline, _, auto_resumed = self._clock(config, now)
         if not auto_resumed or deadline is None:
@@ -467,14 +479,33 @@ class InterviewService:
         await self.store.add_event(interview["id"], "interview.resumed", {"automatic": True})
         return interview
 
-    async def ensure_can_answer(self, interview: dict[str, Any]) -> dict[str, Any]:
-        """Refuse an answer (or skip) while paused or after the deadline. Returns the interview, pause settled."""
+    async def ensure_can_answer(self, interview: dict[str, Any], received_at: datetime | None = None) -> dict[str, Any]:
+        """Refuse an answer (or skip) while paused or after the deadline. Returns the interview, pause settled.
+
+        ``received_at`` is when the answer reached the service: an answer that arrived in time stays accepted even
+        if the deadline passes while it is being transcribed.
+        """
         interview = await self._settle_pause(interview)
-        _, paused_at, _ = self._clock(interview.get("config") or {}, datetime.now(timezone.utc))
+        _, paused_at, _ = self._clock(interview.get("config") or {}, utcnow())
         if paused_at is not None:
             raise InterviewPausedError("the interview is paused; resume it to answer")
-        self.ensure_time_remaining(interview)
+        self.ensure_time_remaining(interview, at=received_at)
         return interview
+
+    async def _credit_checking_time(self, interview_id: str, received_at: datetime) -> dict[str, Any] | None:
+        """Move the deadline by the time the service spent checking an answer, so the student does not lose it.
+
+        Returns the updated config, or None for an untimed interview. Reads the interview fresh so a pause written
+        meanwhile is kept.
+        """
+        config = dict((await self.store.get_interview(interview_id)).get("config") or {})
+        raw = config.get("deadline_at")
+        if not raw:
+            return None
+        seconds = max(0.0, (utcnow() - received_at).total_seconds())
+        config["deadline_at"] = (datetime.fromisoformat(raw) + timedelta(seconds=seconds)).isoformat()
+        config["checking_credit_seconds"] = round(float(config.get("checking_credit_seconds") or 0) + seconds, 1)
+        return config
 
     async def pause(self, interview_id: str) -> dict[str, Any]:
         """Start the interview's one pause. The countdown stops; it resumes by resume() or by itself."""
@@ -490,7 +521,7 @@ class InterviewService:
         if (config.get("pause") or {}).get("used"):
             raise PauseAlreadyUsedError("this interview's pause has already been used", details={"max_pauses": 1})
         self.ensure_time_remaining(interview)
-        config["pause"] = {"used": True, "paused_at": datetime.now(timezone.utc).isoformat()}
+        config["pause"] = {"used": True, "paused_at": utcnow().isoformat()}
         interview = await self.store.update_interview(interview_id, config=config)
         await self.store.add_event(
             interview_id, "interview.paused", {"max_pause_seconds": self.settings.max_pause_seconds}
@@ -501,7 +532,7 @@ class InterviewService:
         """End a running pause and move the deadline by the time spent paused. Harmless when not paused."""
         interview = await self._settle_pause(await self.store.get_interview(interview_id))
         config = dict(interview.get("config") or {})
-        now = datetime.now(timezone.utc)
+        now = utcnow()
         deadline, paused_at, _ = self._clock(config, now)
         if deadline is not None and paused_at is not None:
             paused_for = min((now - paused_at).total_seconds(), float(self.settings.max_pause_seconds))
@@ -563,12 +594,12 @@ class InterviewService:
         }
 
     @staticmethod
-    def ensure_time_remaining(interview: dict[str, Any]) -> None:
+    def ensure_time_remaining(interview: dict[str, Any], at: datetime | None = None) -> None:
         """Refuse new answers once the interview's server-side deadline has passed (finish is still allowed)."""
         raw = (interview.get("config") or {}).get("deadline_at")
         if not raw:
             return
-        if datetime.now(timezone.utc) > datetime.fromisoformat(raw):
+        if (at or utcnow()) > datetime.fromisoformat(raw):
             raise TimeLimitError(
                 "the time limit for this interview has been reached; call finish to get the report",
                 details={"deadline_at": raw},
@@ -741,7 +772,7 @@ class InterviewService:
 
     async def sweep_stalled_builds(self) -> int:
         """Finish reports whose machine went away mid-build (deploy, crash). Safe to run on every machine."""
-        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=self.settings.finish_stale_seconds)).isoformat()
+        cutoff = (utcnow() - timedelta(seconds=self.settings.finish_stale_seconds)).isoformat()
         taken = 0
         for interview_id in await self.store.list_stale_processing_ids(cutoff):
             if await self.store.claim_stale_finish(interview_id, cutoff):
@@ -1030,7 +1061,7 @@ class InterviewService:
         days = self.settings.retention_days
         if days <= 0:
             return 0
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        cutoff = (utcnow() - timedelta(days=days)).isoformat()
         expired = await self.store.list_expired_interview_ids(cutoff)
         for interview_id in expired:
             await self.delete_interview(interview_id)
@@ -1043,7 +1074,7 @@ class InterviewService:
             answered_count = await self.store.count_answers(interview["id"])
         questions = interview.get("questions") or []
         config = interview.get("config") or {}
-        now = datetime.now(timezone.utc)
+        now = utcnow()
         deadline, paused_at, _ = self._clock(config, now)  # only timed when plans are enabled
         if deadline is not None and paused_at is not None:
             # Frozen countdown; deadline_at is where it would be if the student resumed now.
