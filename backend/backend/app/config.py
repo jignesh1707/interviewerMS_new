@@ -107,6 +107,7 @@ class Settings(BaseSettings):
     plans_config_path: Path = BASE_DIR / "plans.yaml"
     # Per-answer caps, always applied.
     max_answer_seconds: int = 180
+    max_pause_seconds: int = 300  # the one pause a timed interview allows ends by itself after this
 
     default_question_count: int = 8
     max_question_count: int = 15

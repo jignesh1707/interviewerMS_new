@@ -310,6 +310,14 @@ class Store:
         row = self._query_one("SELECT COUNT(*) AS n FROM answers WHERE interview_id = ?", (interview_id,))
         return int(row["n"]) if row else 0
 
+    def count_skipped(self, interview_id: str) -> int:
+        """Skipped questions are stored as answers whose metrics say {"skipped": true} (no schema change needed)."""
+        row = self._query_one(
+            "SELECT COUNT(*) AS n FROM answers WHERE interview_id = ? AND metrics LIKE ?",
+            (interview_id, '%"skipped": true%'),
+        )
+        return int(row["n"]) if row else 0
+
     def answer_counts(self, interview_ids: list[str]) -> dict[str, int]:
         """Answer counts for many interviews in one query."""
         if not interview_ids:

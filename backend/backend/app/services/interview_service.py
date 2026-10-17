@@ -8,7 +8,14 @@ from pathlib import Path
 from typing import Any
 
 from app.config import get_settings
-from app.core.errors import AllProvidersFailedError, ConflictError, TimeLimitError, ValidationAppError
+from app.core.errors import (
+    AllProvidersFailedError,
+    ConflictError,
+    InterviewPausedError,
+    PauseAlreadyUsedError,
+    TimeLimitError,
+    ValidationAppError,
+)
 from app.core.logging import get_logger
 from app.core.plans import get_plans
 from app.core.url_safety import validate_callback_url
@@ -302,7 +309,7 @@ class InterviewService:
             raise ValidationAppError("transcript is empty; no speech detected")
         if interview.get("status") == "completed":
             raise ConflictError("interview is already completed; no more answers can be submitted")
-        self.ensure_time_remaining(interview)
+        interview = await self.ensure_can_answer(interview)
         self.enforce_answer_caps(transcript=transcript, duration_seconds=duration_seconds)
 
         resolved_index, target = self._resolve_question(questions, question_id, question_index)
@@ -424,6 +431,135 @@ class InterviewService:
             "next_question_id": next_question["id"] if next_question else None,
             "all_answered": next_question is None,
             "router": router_trace or None,
+        }
+
+    # ----------------------------------------------------------------------------- pause
+
+    def _clock(self, config: dict[str, Any], now: datetime) -> tuple[datetime | None, datetime | None, bool]:
+        """(deadline, paused_at, auto_resumed) as of ``now``.
+
+        A pause still running gives its start; one that has reached ``max_pause_seconds`` has ended by itself, so the
+        deadline is already moved by the whole allowance and ``auto_resumed`` is True (persist it with _settle_pause).
+        """
+        raw = config.get("deadline_at")
+        if not raw:
+            return None, None, False
+        deadline = datetime.fromisoformat(raw)
+        started = (config.get("pause") or {}).get("paused_at")
+        if not started:
+            return deadline, None, False
+        paused_at = datetime.fromisoformat(started)
+        limit = self.settings.max_pause_seconds
+        if (now - paused_at).total_seconds() >= limit:
+            return deadline + timedelta(seconds=limit), None, True
+        return deadline, paused_at, False
+
+    async def _settle_pause(self, interview: dict[str, Any]) -> dict[str, Any]:
+        """Write down a pause that has ended by itself, so every later check sees the moved deadline."""
+        now = datetime.now(timezone.utc)
+        config = dict(interview.get("config") or {})
+        deadline, _, auto_resumed = self._clock(config, now)
+        if not auto_resumed or deadline is None:
+            return interview
+        config["deadline_at"] = deadline.isoformat()
+        config["pause"] = {**config["pause"], "paused_at": None, "resumed_at": now.isoformat(), "auto_resumed": True}
+        interview = await self.store.update_interview(interview["id"], config=config)
+        await self.store.add_event(interview["id"], "interview.resumed", {"automatic": True})
+        return interview
+
+    async def ensure_can_answer(self, interview: dict[str, Any]) -> dict[str, Any]:
+        """Refuse an answer (or skip) while paused or after the deadline. Returns the interview, pause settled."""
+        interview = await self._settle_pause(interview)
+        _, paused_at, _ = self._clock(interview.get("config") or {}, datetime.now(timezone.utc))
+        if paused_at is not None:
+            raise InterviewPausedError("the interview is paused; resume it to answer")
+        self.ensure_time_remaining(interview)
+        return interview
+
+    async def pause(self, interview_id: str) -> dict[str, Any]:
+        """Start the interview's one pause. The countdown stops; it resumes by resume() or by itself."""
+        interview = await self.store.get_interview(interview_id)
+        if interview.get("status") not in ("questions_ready", "in_progress"):
+            raise ConflictError(
+                "only an interview in progress can be paused", details={"status": interview.get("status")}
+            )
+        interview = await self._settle_pause(interview)
+        config = dict(interview.get("config") or {})
+        if not config.get("deadline_at"):
+            raise ConflictError("this interview has no time limit to pause")
+        if (config.get("pause") or {}).get("used"):
+            raise PauseAlreadyUsedError("this interview's pause has already been used", details={"max_pauses": 1})
+        self.ensure_time_remaining(interview)
+        config["pause"] = {"used": True, "paused_at": datetime.now(timezone.utc).isoformat()}
+        interview = await self.store.update_interview(interview_id, config=config)
+        await self.store.add_event(
+            interview_id, "interview.paused", {"max_pause_seconds": self.settings.max_pause_seconds}
+        )
+        return await self.build_status(interview)
+
+    async def resume(self, interview_id: str) -> dict[str, Any]:
+        """End a running pause and move the deadline by the time spent paused. Harmless when not paused."""
+        interview = await self._settle_pause(await self.store.get_interview(interview_id))
+        config = dict(interview.get("config") or {})
+        now = datetime.now(timezone.utc)
+        deadline, paused_at, _ = self._clock(config, now)
+        if deadline is not None and paused_at is not None:
+            paused_for = min((now - paused_at).total_seconds(), float(self.settings.max_pause_seconds))
+            config["deadline_at"] = (deadline + timedelta(seconds=paused_for)).isoformat()
+            config["pause"] = {**config["pause"], "paused_at": None, "resumed_at": now.isoformat()}
+            interview = await self.store.update_interview(interview_id, config=config)
+            await self.store.add_event(interview_id, "interview.resumed", {"paused_seconds": round(paused_for)})
+        return await self.build_status(interview)
+
+    # ----------------------------------------------------------------------------- skip
+
+    @staticmethod
+    def is_skipped(answer: dict[str, Any]) -> bool:
+        return bool((answer.get("metrics") or {}).get("skipped"))
+
+    async def skip_question(
+        self, interview_id: str, *, question_id: str | None = None, question_index: int | None = None
+    ) -> dict[str, Any]:
+        """Record a question as skipped: it counts as done for moving on, and scores zero in the report."""
+        interview = await self.store.get_interview(interview_id)
+        questions = list(interview.get("questions") or [])
+        if not questions:
+            raise ValidationAppError("interview has no questions yet")
+        if interview.get("status") == "completed":
+            raise ConflictError("interview is already completed; no more answers can be submitted")
+        interview = await self.ensure_can_answer(interview)
+        resolved_index, target = self._resolve_question(questions, question_id, question_index)
+        existing = await self.store.list_answers(interview_id)
+        if any(item.get("question_id") == target["id"] for item in existing):
+            raise ConflictError("this question has already been answered", details={"question_id": target["id"]})
+        zeros = {"clarity": 0.0, "structure": 0.0, "depth": 0.0, "impact": 0.0, "overall": 0.0}
+        await self.store.add_answer(
+            interview_id=interview_id,
+            question_id=target["id"],
+            question_index=resolved_index,
+            question=target["question"],
+            transcript="",
+            audio_path=None,
+            metrics={"skipped": True},
+            heuristic_scores=zeros,
+            analysis={"skipped": True, "scores": dict(zeros), "strengths": [], "improvements": []},
+            router=None,
+            duration_seconds=None,
+        )
+        await self.store.update_interview(interview_id, status="in_progress")
+        done = {item["question_id"] for item in existing if item.get("question_id")} | {target["id"]}
+        next_question = self._next_pending_question(questions, done)
+        await self.store.add_event(
+            interview_id,
+            "interview.question_skipped",
+            {"question_id": target["id"], "question_index": resolved_index},
+        )
+        return {
+            "question_id": target["id"],
+            "question_index": resolved_index,
+            "skipped": True,
+            "next_question_id": next_question["id"] if next_question else None,
+            "all_answered": next_question is None,
         }
 
     @staticmethod
@@ -559,7 +695,7 @@ class InterviewService:
                 return "completed", saved["payload"]
             await self.store.update_interview(interview_id, status="failed")  # completed without a report: redo it
         answers = await self.store.list_answers(interview_id)
-        if not answers:
+        if not any(not self.is_skipped(answer) for answer in answers):  # skipped questions do not count
             raise ValidationAppError("cannot finish an interview with no recorded answers")
 
         if not await self.store.claim_finish(interview_id):
@@ -644,9 +780,13 @@ class InterviewService:
                     "star_coverage": metrics.get("star_coverage"),
                     "strengths": analysis.get("strengths", []),
                     "improvements": analysis.get("improvements", []),
+                    "skipped": self.is_skipped(answer),
                 }
             )
+        answered = [answer for answer in answers if not self.is_skipped(answer)]
+        skipped_count = len(answers) - len(answered)
 
+        # The report's averages count every skipped question as zero.
         aggregate = aggregate_heuristic_scores(
             [answer.get("heuristic_scores") or {} for answer in answers]
         )
@@ -654,12 +794,20 @@ class InterviewService:
         trace: dict[str, Any] = {}
         policy = self._policy_for(interview.get("config") or {})
 
+        # The AI scores only what was answered; the skipped questions are then counted as zeros below, so the
+        # result does not depend on how a model would treat an empty answer.
         scorecard, routing = await self._try_llm_json(
             LLMTask.FINAL_SCORING,
             build_final_scoring_messages(
                 role=interview["role"],
-                answer_digest=per_answer,
-                aggregate=aggregate,
+                answer_digest=[
+                    {key: value for key, value in item.items() if key != "skipped"}
+                    for item in per_answer
+                    if not item["skipped"]
+                ],
+                aggregate=aggregate_heuristic_scores(
+                    [answer.get("heuristic_scores") or {} for answer in answered]
+                ),
                 match=match,
             ),
             interview_id,
@@ -667,8 +815,10 @@ class InterviewService:
         )
         if routing:
             trace["final_scoring"] = routing
-        if not scorecard:
-            scorecard = self._fallback_scorecard(per_answer, aggregate, match)
+        if scorecard:
+            scorecard = self._count_skips_as_zero(scorecard, len(answered), skipped_count)
+        else:
+            scorecard = self._fallback_scorecard(per_answer, aggregate, match)  # already averages skips as zero
 
         # Tips and narrative both depend only on the scorecard, so run them together.
         (tips_payload, tips_routing), (narrative_payload, narrative_routing) = await asyncio.gather(
@@ -721,6 +871,7 @@ class InterviewService:
             "aggregate_metrics": aggregate,
             "skill_match": match,
             "per_question": per_answer,
+            "skipped_count": skipped_count,
             "coaching_notes": [note for note in coaching if note],
             "routing_trace": trace,
             "generated_at": None,
@@ -808,20 +959,35 @@ class InterviewService:
         return payload, routing
 
     @staticmethod
+    def _count_skips_as_zero(scorecard: dict[str, Any], answered: int, skipped: int) -> dict[str, Any]:
+        """Scale the AI's scores so each skipped question weighs in as a zero, and cap readiness to match."""
+        if not skipped or answered <= 0:
+            return scorecard
+        factor = answered / (answered + skipped)
+        scaled = dict(scorecard)
+        overall = scaled.get("overall_score")
+        if isinstance(overall, (int, float)):
+            scaled["overall_score"] = round(overall * factor)
+            capped = _readiness_for(scaled["overall_score"])
+            current = scaled.get("readiness_level")
+            if current not in _READINESS_ORDER or _READINESS_ORDER.index(capped) < _READINESS_ORDER.index(current):
+                scaled["readiness_level"] = capped
+        dimensions = scaled.get("dimension_scores")
+        if isinstance(dimensions, dict):
+            scaled["dimension_scores"] = {
+                key: round(value * factor) if isinstance(value, (int, float)) else value
+                for key, value in dimensions.items()
+            }
+        return scaled
+
+    @staticmethod
     def _fallback_scorecard(
         per_answer: list[dict[str, Any]], aggregate: dict[str, Any], match: dict[str, Any]
     ) -> dict[str, Any]:
         coverage = match.get("coverage") or 0.0
         overall = int(round(aggregate.get("overall", 0.0)))
         weak = [item["question"] for item in per_answer if item["overall"] < 60]
-        if overall >= 80:
-            readiness = "interview_ready"
-        elif overall >= 65:
-            readiness = "almost_ready"
-        elif overall >= 45:
-            readiness = "needs_practice"
-        else:
-            readiness = "not_ready"
+        readiness = _readiness_for(overall)
         return {
             "overall_score": overall,
             "dimension_scores": {
@@ -877,7 +1043,19 @@ class InterviewService:
             answered_count = await self.store.count_answers(interview["id"])
         questions = interview.get("questions") or []
         config = interview.get("config") or {}
-        deadline_at = config.get("deadline_at")  # only set when plans are enabled
+        now = datetime.now(timezone.utc)
+        deadline, paused_at, _ = self._clock(config, now)  # only timed when plans are enabled
+        if deadline is not None and paused_at is not None:
+            # Frozen countdown; deadline_at is where it would be if the student resumed now.
+            remaining = max(0, int((deadline - paused_at).total_seconds()))
+            deadline = deadline + (now - paused_at)
+        elif deadline is not None:
+            remaining = max(0, int((deadline - now).total_seconds()))
+        else:
+            remaining = None
+        deadline_at = deadline.isoformat() if deadline is not None else None
+        limit = self.settings.max_pause_seconds
+        in_progress = interview["status"] in ("questions_ready", "in_progress")
         return {
             "id": interview["id"],
             "status": interview["status"],
@@ -893,12 +1071,30 @@ class InterviewService:
             "deadline_at": deadline_at,
             "grace_seconds": config.get("grace_seconds") if deadline_at else None,
             # Computed here so a client's countdown does not depend on its own clock being right.
-            "seconds_remaining": (
-                max(0, int((datetime.fromisoformat(deadline_at) - datetime.now(timezone.utc)).total_seconds()))
-                if deadline_at
-                else None
+            "seconds_remaining": remaining,
+            "paused": paused_at is not None,
+            "pause_available": bool(
+                deadline is not None and in_progress and remaining and not (config.get("pause") or {}).get("used")
             ),
+            "max_pause_seconds": limit if deadline is not None else None,
+            "pause_seconds_remaining": (
+                max(0, int(limit - (now - paused_at).total_seconds())) if paused_at is not None else None
+            ),
+            "skipped_count": await self.store.count_skipped(interview["id"]) if answered_count else 0,
         }
+
+
+_READINESS_ORDER = ("not_ready", "needs_practice", "almost_ready", "interview_ready")
+
+
+def _readiness_for(score: float) -> str:
+    if score >= 80:
+        return "interview_ready"
+    if score >= 65:
+        return "almost_ready"
+    if score >= 45:
+        return "needs_practice"
+    return "not_ready"
 
 
 _service: InterviewService | None = None

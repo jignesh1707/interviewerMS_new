@@ -54,6 +54,14 @@ class TimeLimitError(ConflictError):
     code = "time_limit_reached"
 
 
+class InterviewPausedError(ConflictError):
+    code = "interview_paused"
+
+
+class PauseAlreadyUsedError(ConflictError):
+    code = "pause_already_used"
+
+
 class RefundNotAllowedError(ConflictError):
     code = "refund_not_allowed"
 

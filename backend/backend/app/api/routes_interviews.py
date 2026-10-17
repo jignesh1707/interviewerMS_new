@@ -16,6 +16,8 @@ from app.schemas.interview import (
     CreateInterviewResponse,
     InterviewStatus,
     ReportResponse,
+    SkipRequest,
+    SkipResponse,
 )
 from app.services.interview_service import get_interview_service
 from app.services.storage import get_async_store
@@ -158,7 +160,7 @@ async def submit_audio_answer(
     interview = await get_async_store().get_interview_for_tenant(interview_id, tenant)
     await enforce_student_limits(tenant, interview.get("external_ref"))  # before any speech-to-text work is spent
     service = get_interview_service()
-    service.ensure_time_remaining(interview)
+    interview = await service.ensure_can_answer(interview)  # paused or out of time: refused before any transcription
     content = await read_capped(audio, get_settings().stt_max_upload_mb * 1024 * 1024, "audio")
     filename = audio.filename or "answer.webm"
     transcription = await stt.transcribe_bytes(content, filename)
@@ -282,6 +284,31 @@ async def delete_interview(interview_id: str, tenant: Tenant) -> Response:
     await get_async_store().get_interview_for_tenant(interview_id, tenant)
     await get_interview_service().delete_interview(interview_id)
     return Response(status_code=204)
+
+
+@router.post("/{interview_id}/pause", response_model=InterviewStatus)
+async def pause_interview(interview_id: str, tenant: Tenant) -> InterviewStatus:
+    """Start the interview's one pause: the countdown stops and answers are refused until resume, or until it ends
+    by itself after `max_pause_seconds` (5 minutes by default). 409 `pause_already_used` for a second pause."""
+    await get_async_store().get_interview_for_tenant(interview_id, tenant)
+    return InterviewStatus(**(await get_interview_service().pause(interview_id)))
+
+
+@router.post("/{interview_id}/resume", response_model=InterviewStatus)
+async def resume_interview(interview_id: str, tenant: Tenant) -> InterviewStatus:
+    """End the pause; the deadline moves by the time spent paused. Harmless when the interview is not paused."""
+    await get_async_store().get_interview_for_tenant(interview_id, tenant)
+    return InterviewStatus(**(await get_interview_service().resume(interview_id)))
+
+
+@router.post("/{interview_id}/skip", response_model=SkipResponse)
+async def skip_question(interview_id: str, tenant: Tenant, payload: SkipRequest) -> SkipResponse:
+    """Skip a question. It cannot be answered afterwards, counts as zero in the score and is listed in the report."""
+    await get_async_store().get_interview_for_tenant(interview_id, tenant)
+    result = await get_interview_service().skip_question(
+        interview_id, question_id=payload.question_id, question_index=payload.question_index
+    )
+    return SkipResponse(**result)
 
 
 @router.get("/{interview_id}/status", response_model=InterviewStatus)

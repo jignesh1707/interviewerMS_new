@@ -96,6 +96,32 @@ class InterviewStatus(BaseModel):
     deadline_at: str | None = None  # answers are refused after this moment (UTC, ISO 8601)
     grace_seconds: int | None = None  # the last part of the time before deadline_at; the nominal end is deadline_at minus this
     seconds_remaining: int | None = None  # until deadline_at, measured by the server when it answered; 0 once passed
+    # One pause per timed interview, ended by resume or automatically after max_pause_seconds. While paused the
+    # countdown is frozen and answers are refused; deadline_at shows where it would be if resumed now.
+    paused: bool = False
+    pause_available: bool = False
+    max_pause_seconds: int | None = None
+    pause_seconds_remaining: int | None = None  # while paused: until the pause ends by itself
+    skipped_count: int = 0  # skipped questions, included in answered_count; each scores zero
+
+
+class SkipRequest(BaseModel):
+    question_id: str | None = Field(default=None, min_length=1)
+    question_index: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def require_question_reference(self) -> "SkipRequest":
+        if self.question_id is None and self.question_index is None:
+            raise ValueError("provide either question_id or question_index")
+        return self
+
+
+class SkipResponse(BaseModel):
+    question_id: str
+    question_index: int
+    skipped: bool = True
+    next_question_id: str | None = None
+    all_answered: bool = False
 
 
 class CreateInterviewResponse(BaseModel):
