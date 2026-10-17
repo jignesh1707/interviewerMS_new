@@ -71,6 +71,22 @@ For each question:
 
 Typed answers use `POST /api/v1/interviews/{id}/answers` with `question_index` and `transcript`.
 
+**Skipping a question.** `POST /api/v1/interviews/{id}/skip` with `question_index` (or `question_id`) records it as
+skipped and returns `next_question_id`. A skipped question cannot be answered afterwards, and a question already
+answered cannot be skipped (409). It counts as done in `answered_count` (and in `skipped_count`), and **it scores zero**:
+the report lists it in `per_question` with `"skipped": true` and `overall: 0`, `skipped_count` says how many, and the
+overall and dimension scores count each skip as a zero (the AI scores only what was answered, then the scores are scaled
+by answered / (answered + skipped) and readiness is capped to match). `finish` needs at least one real answer; skips
+alone return 422 "cannot finish an interview with no recorded answers".
+
+**Pausing (timed interviews only).** `POST /api/v1/interviews/{id}/pause` starts the interview's **one** pause: the
+countdown stops and answers and skips return **409** `interview_paused`. `POST .../resume` ends it and moves
+`deadline_at` by the time spent paused; a pause that reaches `MAX_PAUSE_SECONDS` (300) ends by itself with the deadline
+moved by exactly that much. A second pause returns 409 `pause_already_used`; pausing after the deadline returns 409
+`time_limit_reached`. `finish` works while paused. The status carries `paused`, `pause_available`,
+`max_pause_seconds` and, while paused, `pause_seconds_remaining`; `seconds_remaining` stays frozen and `deadline_at`
+shows where the deadline would be if resumed now.
+
 When done, call `POST /api/v1/interviews/{id}/finish`. What comes back depends on `FINISH_ASYNC`:
 
 - **`FINISH_ASYNC=true` (use this in production).** The call answers **202** straight away with
@@ -107,8 +123,10 @@ Write your client to accept both: if the response has a `report`, use it, otherw
     "practice_prompts": ["Describe a latency win"]
   },
   "per_question": [
-    {"index": 0, "question": "…", "overall": 78, "words_per_minute": 132, "filler_total": 3}
+    {"index": 0, "question": "…", "overall": 78, "words_per_minute": 132, "filler_total": 3, "skipped": false},
+    {"index": 1, "question": "…", "overall": 0, "skipped": true}
   ],
+  "skipped_count": 1,
   "routing_trace": {
     "final_scoring": {"provider": "openai", "model": "gpt-4o", "tier": "premium", "fallbacks": 0}
   }
@@ -258,6 +276,7 @@ The refund rule in `plans.yaml` is `rule: any`: refundable while **either** at m
 - **Choose a length** with `config.duration_minutes` (default: the plan's default). A length the plan does not allow returns 422. The length sets `question_count` and `max_followups`; values you send for those are replaced.
 - **Server-side deadline.** The create response has `interview.duration_minutes` and `interview.deadline_at` (length plus `grace_seconds`, counted from when the questions are ready). After it, answers return **409** `time_limit_reached`; `finish` still works so the student gets the report. Audio is refused before any transcription work is spent. The status (create, `GET .../status`) also carries `grace_seconds` and `seconds_remaining` (to `deadline_at`, measured by the server, so a countdown does not depend on the student's clock). The nominal end to show the student is `seconds_remaining - grace_seconds`; the demo UI's countdown (`frontend/frontend/src/countdown.ts`) does exactly that.
 - **Per-answer caps** (always on): `MAX_ANSWER_SECONDS` (180) and `MAX_TRANSCRIPT_CHARS` (4000). Longer answers return 422 and are not stored.
+- **Pause:** one per interview, at most `MAX_PAUSE_SECONDS` (300); see "Pausing" in section 3.
 
 ### Which AI providers see student data
 

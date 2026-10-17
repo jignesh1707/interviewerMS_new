@@ -754,6 +754,38 @@
             "title": "Id",
             "type": "string"
           },
+          "max_pause_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Pause Seconds"
+          },
+          "pause_available": {
+            "default": false,
+            "title": "Pause Available",
+            "type": "boolean"
+          },
+          "pause_seconds_remaining": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pause Seconds Remaining"
+          },
+          "paused": {
+            "default": false,
+            "title": "Paused",
+            "type": "boolean"
+          },
           "question_count": {
             "title": "Question Count",
             "type": "integer"
@@ -772,6 +804,11 @@
               }
             ],
             "title": "Seconds Remaining"
+          },
+          "skipped_count": {
+            "default": 0,
+            "title": "Skipped Count",
+            "type": "integer"
           },
           "status": {
             "enum": [
@@ -945,6 +982,75 @@
           "payment_id"
         ],
         "title": "RevokeRequest",
+        "type": "object"
+      },
+      "SkipRequest": {
+        "properties": {
+          "question_id": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Question Id"
+          },
+          "question_index": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Question Index"
+          }
+        },
+        "title": "SkipRequest",
+        "type": "object"
+      },
+      "SkipResponse": {
+        "properties": {
+          "all_answered": {
+            "default": false,
+            "title": "All Answered",
+            "type": "boolean"
+          },
+          "next_question_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Question Id"
+          },
+          "question_id": {
+            "title": "Question Id",
+            "type": "string"
+          },
+          "question_index": {
+            "title": "Question Index",
+            "type": "integer"
+          },
+          "skipped": {
+            "default": true,
+            "title": "Skipped",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "question_id",
+          "question_index"
+        ],
+        "title": "SkipResponse",
         "type": "object"
       },
       "ValidationError": {
@@ -1908,6 +2014,81 @@
         ]
       }
     },
+    "/api/v1/interviews/{interview_id}/pause": {
+      "post": {
+        "description": "Start the interview's one pause: the countdown stops and answers are refused until resume, or until it ends\nby itself after `max_pause_seconds` (5 minutes by default). 409 `pause_already_used` for a second pause.",
+        "operationId": "pause_interview_api_v1_interviews__interview_id__pause_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "interview_id",
+            "required": true,
+            "schema": {
+              "title": "Interview Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-API-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InterviewStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Pause Interview",
+        "tags": [
+          "interviews"
+        ]
+      }
+    },
     "/api/v1/interviews/{interview_id}/questions": {
       "get": {
         "operationId": "get_questions_api_v1_interviews__interview_id__questions_get",
@@ -2053,6 +2234,166 @@
           }
         },
         "summary": "Get Report",
+        "tags": [
+          "interviews"
+        ]
+      }
+    },
+    "/api/v1/interviews/{interview_id}/resume": {
+      "post": {
+        "description": "End the pause; the deadline moves by the time spent paused. Harmless when the interview is not paused.",
+        "operationId": "resume_interview_api_v1_interviews__interview_id__resume_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "interview_id",
+            "required": true,
+            "schema": {
+              "title": "Interview Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-API-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InterviewStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resume Interview",
+        "tags": [
+          "interviews"
+        ]
+      }
+    },
+    "/api/v1/interviews/{interview_id}/skip": {
+      "post": {
+        "description": "Skip a question. It cannot be answered afterwards, counts as zero in the score and is listed in the report.",
+        "operationId": "skip_question_api_v1_interviews__interview_id__skip_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "interview_id",
+            "required": true,
+            "schema": {
+              "title": "Interview Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-API-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SkipRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkipResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Skip Question",
         "tags": [
           "interviews"
         ]
