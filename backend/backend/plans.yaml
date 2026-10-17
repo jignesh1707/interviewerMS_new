@@ -24,15 +24,17 @@
 # rule "all" = both must hold. Used minutes count the booked length of each interview.
 #
 # `profiles` fixes what each interview length contains. Every length a plan allows must have a profile.
+# About 2-2.5 minutes per question incl. follow-ups: a full spoken STAR answer takes 1.5-2 minutes plus reading and
+# checking time (tested on staging 2026-10-17; 7 + 2 in 15 minutes was too tight).
 # `grace_seconds`: extra time after the length runs out before answers are refused.
 
 default_plan: economy
 grace_seconds: 60
 
 profiles:
-  15: {question_count: 7, max_followups: 2}
-  20: {question_count: 9, max_followups: 3}
-  25: {question_count: 12, max_followups: 3}
+  15: {question_count: 5, max_followups: 1}
+  20: {question_count: 7, max_followups: 2}
+  25: {question_count: 9, max_followups: 3}
 
 plans:
   economy:          # add-on wallet (see skus); OpenAI GPT-6 Luna (via OpenRouter), then OpenAI and Anthropic. Never DeepSeek.
