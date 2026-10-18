@@ -97,11 +97,16 @@ class RouterConfig(BaseModel):
 class ProviderHealth:
     consecutive_failures: int = 0
     disabled_until: float = 0.0
+    auth_disabled_until: float = 0.0
     last_error: str = ""
     last_error_at: float = 0.0
 
     def is_available(self, now: float) -> bool:
         return now >= self.disabled_until
+
+    def auth_locked(self, now: float) -> bool:
+        """A rejected key affects every model of the provider, not just the one that saw it."""
+        return now < self.auth_disabled_until
 
     def record_failure(self, message: str, cooldown: float, now: float, auth_error: bool = False) -> None:
         self.consecutive_failures += 1
@@ -110,11 +115,13 @@ class ProviderHealth:
         effective_cooldown = cooldown * max(1, min(self.consecutive_failures, 5))
         if auth_error:
             effective_cooldown = max(cooldown, 900.0)
+            self.auth_disabled_until = now + effective_cooldown
         self.disabled_until = now + effective_cooldown
 
     def record_success(self) -> None:
         self.consecutive_failures = 0
         self.disabled_until = 0.0
+        self.auth_disabled_until = 0.0
 
 
 @dataclass
@@ -163,7 +170,8 @@ class ModelRouter:
         self.settings = settings or get_settings()
         self.config = config or load_router_config(self.settings.models_config_path)
         self.usage = UsageTotals()
-        self._health: dict[str, ProviderHealth] = {}
+        self._health: dict[str, ProviderHealth] = {}  # per provider: status and key (auth) failures
+        self._model_health: dict[str, ProviderHealth] = {}  # per provider/model: what decides skipping
         self._lock = asyncio.Lock()
         self._providers: dict[str, Any] = {}
         self._build_providers()
@@ -211,6 +219,11 @@ class ModelRouter:
     def health(self, name: str) -> ProviderHealth:
         return self._health.setdefault(name, ProviderHealth())
 
+    def model_health(self, candidate: ModelCandidate) -> ProviderHealth:
+        """One model's own circuit, so two models at one provider (Economy: GPT-6 Luna, then gpt-4.1-nano) fail over
+        to each other instead of a failing model putting the whole provider in cooldown."""
+        return self._model_health.setdefault(f"{candidate.provider}/{candidate.model}", ProviderHealth())
+
     def _plan(
         self,
         tier: str,
@@ -229,7 +242,7 @@ class ModelRouter:
             if not self.provider_configured(candidate.provider):
                 skipped.append({"provider": candidate.provider, "model": candidate.model, "reason": "not_configured"})
                 continue
-            if not self.health(candidate.provider).is_available(now):
+            if not self.model_health(candidate).is_available(now) or self.health(candidate.provider).auth_locked(now):
                 skipped.append({"provider": candidate.provider, "model": candidate.model, "reason": "circuit_open"})
                 continue
             ready.append(candidate)
@@ -297,6 +310,12 @@ class ModelRouter:
 
         last_error: Exception | None = None
         for candidate in ready:
+            if self.health(candidate.provider).auth_locked(time.monotonic()):
+                # An earlier model of this provider just had its key rejected: the next one shares the key.
+                attempts.append(
+                    {"provider": candidate.provider, "model": candidate.model, "reason": "auth_locked", "stage": "run"}
+                )
+                continue
             provider = self._providers[candidate.provider]
             started = time.monotonic()
             for attempt in range(1, self.settings.llm_max_attempts_per_provider + 1):
@@ -381,6 +400,7 @@ class ModelRouter:
                     latency_ms = int((time.monotonic() - started) * 1000)
                     async with self._lock:
                         self.health(candidate.provider).record_success()
+                        self.model_health(candidate).record_success()
                         cost = self.usage.add(response, candidate)
                     attempts.append(
                         {
@@ -416,12 +436,11 @@ class ModelRouter:
 
             auth_error = isinstance(last_error, ProviderCallError) and last_error.auth_error
             async with self._lock:
-                self.health(candidate.provider).record_failure(
-                    redact_secrets(str(last_error), self._secret_values()),
-                    self.settings.provider_cooldown_seconds,
-                    time.monotonic(),
-                    auth_error,
-                )
+                safe_last = redact_secrets(str(last_error), self._secret_values())
+                now = time.monotonic()
+                cooldown = self.settings.provider_cooldown_seconds
+                self.health(candidate.provider).record_failure(safe_last, cooldown, now, auth_error)
+                self.model_health(candidate).record_failure(safe_last, cooldown, now, auth_error)
 
         raise AllProvidersFailedError(
             f"all providers failed for task '{request.task}'",
@@ -472,10 +491,12 @@ class ModelRouter:
         providers = {}
         for name, provider in self._providers.items():
             state = self.health(name)
+            models = [h for key, h in self._model_health.items() if key.startswith(f"{name}/")]
+            some_model_up = not models or any(h.is_available(now) for h in models)
             providers[name] = {
                 "configured": self.provider_configured(name),
                 "disabled_by_policy": name in self.settings.disabled_provider_set,
-                "available": self.provider_configured(name) and state.is_available(now),
+                "available": self.provider_configured(name) and not state.auth_locked(now) and some_model_up,
                 "consecutive_failures": state.consecutive_failures,
                 "disabled_for_seconds": max(0.0, round(state.disabled_until - now, 1)),
                 "last_error": state.last_error,

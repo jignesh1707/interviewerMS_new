@@ -4,7 +4,7 @@ The router lives in `backend/app/llm/router.py` and is configured by `backend/mo
 
 ## Concepts
 
-- **Tier**: an ordered list of `{provider, model}` candidates. In the shipped Economy setup the order is OpenAI GPT-6 Luna called directly, then GPT-5.6 Luna through OpenRouter, then Anthropic.
+- **Tier**: an ordered list of `{provider, model}` candidates. In the shipped Economy setup the order is OpenAI GPT-6 Luna called directly, then OpenAI gpt-4.1-nano called directly, then Anthropic.
 - **Task**: a named unit of work (`question_generation`, `final_scoring`, ...).
 - **Task map**: assigns each task to a tier, so simple work never reaches an expensive model.
 - **Circuit breaker**: a provider that keeps failing is temporarily removed from the candidate list.
@@ -47,9 +47,9 @@ default_tier: standard
 
 Rules:
 
-- Candidate order inside a tier is the fallback order. The shipped Economy order is OpenAI directly (GPT-6 Luna), then OpenRouter (GPT-5.6 Luna), then Anthropic. The fallback is a different model on a different route, so one outage does not take out both.
-- OpenAI is called directly with the model id `gpt-6-luna` as a reasoning model: no `temperature`, the output limit sent as `max_completion_tokens`, `reasoning_effort: low` (the `omit_temperature` and `max_tokens_field` options in models.yaml). Its price is assumed equal to OpenRouter's $0.10 in / $0.50 out; check it against OpenAI's list.
-- OpenRouter is called at `https://openrouter.ai/api/v1` with the model id `openai/gpt-5.6-luna` ($0.20 in / $1.20 out per million tokens, checked 2026-10-16; OpenAI is the only host it lists). By default requests carry `provider.data_collection = deny` (`OPENROUTER_DATA_COLLECTION`), so OpenRouter only routes to upstream hosts that do not retain or train on prompts. If no such host is available the call fails and routing moves on.
+- Candidate order inside a tier is the fallback order. The shipped Economy order is OpenAI GPT-6 Luna, then OpenAI gpt-4.1-nano (both called directly), then Anthropic. A model that fails goes into its own cooldown (health is tracked per provider and model), so the second OpenAI model keeps serving while the first is down; a rejected key (auth error) puts every model of that provider in cooldown, and Anthropic covers an OpenAI-wide outage.
+- OpenAI is called directly with the model id `gpt-6-luna` as a reasoning model: no `temperature`, the output limit sent as `max_completion_tokens`, `reasoning_effort: low` (the `omit_temperature` and `max_tokens_field` options in models.yaml). Its price is assumed to be $0.10 in / $0.50 out (OpenRouter's catalogue for the same model); check it against OpenAI's list. gpt-4.1-nano is an ordinary chat model (temperature and `max_tokens` as usual), priced at $0.10 / $0.40 per million tokens (not yet checked against OpenAI's list).
+- OpenRouter (no longer in any shipped profile since 2026-10-18; the client stays for future use) is called at `https://openrouter.ai/api/v1`. By default requests carry `provider.data_collection = deny` (`OPENROUTER_DATA_COLLECTION`), so OpenRouter only routes to upstream hosts that do not retain or train on prompts. If no such host is available the call fails and routing moves on.
 - Prices are only used for the cost estimate reported in `/api/v1/models` and `routing_trace`; they
   are not used for routing decisions. Update them to match current provider pricing.
 - Set `priority` on a candidate to override YAML order (lower is tried first).
@@ -70,7 +70,7 @@ This is useful for forcing a higher tier on an important candidate without chang
 with its own `cheap`, `standard` and `premium` lists. `plans.yaml` picks one per plan with `llm_profile`. The shipped
 setup:
 
-- `economy`: GPT-6 Luna at OpenAI directly for every tier, then GPT-5.6 Luna through OpenRouter, then Anthropic. No DeepSeek.
+- `economy`: GPT-6 Luna at OpenAI directly for every tier, then gpt-4.1-nano at OpenAI directly, then Anthropic. No DeepSeek, no OpenRouter.
 - `premium`: Anthropic (Haiku 4.5 for light work, Sonnet 5.5 for the rest), then OpenAI. No DeepSeek.
 
 Rules:

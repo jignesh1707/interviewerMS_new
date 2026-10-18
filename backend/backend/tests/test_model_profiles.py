@@ -57,14 +57,14 @@ def test_premium_profile_only_lists_us_providers_and_leads_with_anthropic():
     assert config.providers_in("premium") <= US_ONLY
 
 
-def test_economy_profile_leads_with_gpt_6_luna_direct_then_gpt_5_6_luna_through_openrouter():
+def test_economy_profile_leads_with_gpt_6_luna_then_gpt_4_1_nano_both_direct_at_openai():
     config = load_router_config(MODELS_YAML)
     for tier in ("cheap", "standard", "premium"):
         assert config.candidates(tier, profile="economy") == config.candidates(tier)
         order = [(c.provider, c.model) for c in config.candidates(tier, profile=None)]
-        assert order[:2] == [("openai", "gpt-6-luna"), ("openrouter", "openai/gpt-5.6-luna")]
+        assert order[:2] == [("openai", "gpt-6-luna"), ("openai", "gpt-4.1-nano")]
         assert order[2][0] == "anthropic"
-    assert config.providers_in("economy") == {"openrouter", "openai", "anthropic"}
+    assert config.providers_in("economy") == {"openai", "anthropic"}
 
 
 def test_no_shipped_profile_lists_deepseek():

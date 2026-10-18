@@ -467,7 +467,7 @@ def test_the_catalog_lists_each_plan_with_its_pack_and_the_ai_providers_it_may_u
     assert premium["refund"] == {"max_interviews_started": 1, "max_minutes_used": 15, "rule": "any"}
     # these are the companies that may see a student's data on each plan: it is what a consent screen must name
     assert set(premium["llm_providers"]) == {"anthropic", "openai"}
-    assert set(by_name["economy"]["llm_providers"]) == {"openrouter", "openai", "anthropic"}
+    assert set(by_name["economy"]["llm_providers"]) == {"openai", "anthropic"}
     assert "deepseek" not in premium["llm_providers"]
 
 

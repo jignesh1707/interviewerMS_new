@@ -58,19 +58,18 @@ student can say anything aloud. Do not describe the data as anonymous.
 | Fly.io | Hosting the service (region of your choice) | Everything in section 2, in memory and in transit | All plans |
 | Supabase | Postgres database (region of your choice) | Everything stored in section 2 | All plans |
 | Upstash | Redis | Rate-limit counters, keyed by tenant and student reference; expire after a minute or two days | All plans |
-| OpenRouter | AI model gateway; forwards GPT-5.6 Luna to OpenAI (the only host it lists for that model) | Redacted resume text and answers | Fallback on Economy |
-| OpenAI | AI model (GPT-6 Luna called directly) | Redacted resume text and answers | Economy plan, first choice; fallback on Premium |
+| OpenAI | AI models called directly: GPT-6 Luna, then gpt-4.1-nano | Redacted resume text and answers | Economy plan, first and second choice; fallback on Premium |
 | Anthropic | AI model | Redacted resume text and answers | Premium plan first; Economy only as a last fallback |
 
 `GET /api/v1/plans` returns, for each plan, the providers that may process its data, computed from the configuration
 and excluding any provider switched off with `LLM_DISABLED_PROVIDERS`. Use that to build the consent screen so it
-cannot drift from what the service does. **Neither plan reaches DeepSeek, and Premium never reaches OpenRouter**: each plan carries a provider
+cannot drift from what the service does. **No plan reaches DeepSeek or OpenRouter**: each plan carries a provider
 allow-list that the router enforces on every call, and the service refuses to start if the model configuration
 disagrees with it.
 
 Economy previously used DeepSeek, a China-based provider; as of 2026-10-08 it no longer does and both plans use US
-providers only. OpenRouter is a gateway: it should be listed on the Economy consent text, and `OPENROUTER_DATA_COLLECTION=deny`
-(the default) asks it to use only hosts that do not retain or train on prompts. Check OpenRouter's and OpenAI's current
+providers only. As of 2026-10-18 no plan uses OpenRouter either: Economy's fallback is a second OpenAI model called
+directly (gpt-4.1-nano), so only OpenAI and Anthropic ever receive student text. Check OpenAI's and Anthropic's current
 published terms before launch.
 
 Provider data-retention and training terms differ by provider and by model, and change. Obtain each provider's current
@@ -124,7 +123,7 @@ their own reports, which can be referenced.
 1. Are the main app and this service operated by the same legal entity? If not, a data processing agreement is needed
    between them.
 2. Signed data processing agreements, and current data-retention and training terms, from each AI provider in use.
-3. ~~Whether Economy may keep using a China-based provider~~ Decided 2026-10-08: Economy moved to US providers only. The consent wording must now name OpenRouter, OpenAI and Anthropic for Economy.
+3. ~~Whether Economy may keep using a China-based provider~~ Decided 2026-10-08: Economy moved to US providers only. Since 2026-10-18 the consent wording names OpenAI and Anthropic for every plan (OpenRouter dropped).
 4. The retention period for interviews and for purchase records.
 5. State privacy laws that apply (for example California), rules on voice and biometric data (for example Illinois;
    audio here is used only for transcription and no voiceprint is created), and the position of students from other
