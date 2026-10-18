@@ -115,7 +115,7 @@ def test_shipped_plans_file_matches_the_two_offers():
     assert premium.llm_profile == "premium"
     # No plan's student data may reach DeepSeek: the allow-list is the guarantee, the model lists are not.
     assert economy.llm_allowed_providers is not None and premium.llm_allowed_providers is not None
-    assert set(economy.llm_allowed_providers) == {"openrouter", "openai", "anthropic"}
+    assert set(economy.llm_allowed_providers) == {"openai", "anthropic"}
     assert set(premium.llm_allowed_providers) == {"anthropic", "openai"}
     assert isinstance(config, PlansConfig)
 
@@ -161,7 +161,7 @@ def test_shipped_subscription_and_addon_offers():
     assert included == {"included_weekly": (2, 14), "included_monthly": (5, 35), "included_quarterly": (18, 100)}
     for name in included:
         assert config.plan(name).durations == [15]  # whole 15-minute interviews only
-        assert set(config.plan(name).llm_allowed_providers) == {"openrouter", "openai", "anthropic"}
+        assert set(config.plan(name).llm_allowed_providers) == {"openai", "anthropic"}
     assert {name: (sku.plan, sku.minutes, sku.days) for name, sku in config.skus.items()} == {
         "addon_5": ("economy", 150, 30),  # 10 x 15 minutes
         "addon_10_economy": ("economy", 300, 30),  # 20 x 15 minutes

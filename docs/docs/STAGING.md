@@ -24,8 +24,8 @@ test suite on SQLite and Postgres 16.
 
 - Supabase: a **staging** schema and role (DEPLOY_FLY_SUPABASE.md, section 1). Use the transaction pooler URL.
 - Upstash Redis in the same region (section 2).
-- Provider keys for every provider your plans use: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`
-  (Economy calls GPT-6 Luna at OpenAI first, GPT-5.6 Luna through OpenRouter as the fallback). Staging keys with a spending cap if the providers allow it.
+- Provider keys for every provider your plans use: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`
+  (Economy calls GPT-6 Luna at OpenAI first, then gpt-4.1-nano at OpenAI, then Anthropic; no OpenRouter key needed). Staging keys with a spending cap if the providers allow it.
 - Two random secrets: the service API key for the main app and `WEBHOOK_SECRET`:
 
 ```bash
@@ -46,7 +46,7 @@ fly secrets set -a interviewer-ms-staging \
   WEBHOOK_SECRET='<32+ random chars>' \
   DATABASE_URL='postgresql://interviewer_app.<ref>:<pw>@aws-0-<region>.pooler.supabase.com:6543/postgres?sslmode=require' \
   REDIS_URL='rediss://default:<token>@<name>.upstash.io:6379' \
-  ANTHROPIC_API_KEY='...' OPENAI_API_KEY='...' OPENROUTER_API_KEY='...'
+  ANTHROPIC_API_KEY='...' OPENAI_API_KEY='...'
 fly deploy -a interviewer-ms-staging --no-public-ips
 fly ips allocate-v6 --private -a interviewer-ms-staging
 fly status -a interviewer-ms-staging
