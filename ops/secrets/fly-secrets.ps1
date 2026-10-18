@@ -29,6 +29,17 @@ function Get-NoteName([string]$app) { "fly/$app" }
 # Windows PowerShell 5.1 does not enumerate a JSON array from ConvertFrom-Json, so always loop with foreach.
 function Read-Json($lines) { ($lines -join "`n") | ConvertFrom-Json }
 
+# Base64 of the JSON, which is all `bw encode` does. Piping into `bw encode` from Windows PowerShell 5.1 adds a
+# byte-order mark that bw then refuses ("Error parsing the encoded request data").
+function ConvertTo-BwEncoded($object) {
+    $json = ConvertTo-Json -InputObject $object -Depth 10 -Compress
+    [Convert]::ToBase64String($utf8.GetBytes($json))
+}
+
+function Assert-BwOk([string]$what) {
+    if ($LASTEXITCODE -ne 0) { throw "Bitwarden refused to $what (see the bw message above). Nothing was saved." }
+}
+
 function Assert-Unlocked {
     if (-not (Get-Command bw -ErrorAction SilentlyContinue)) { throw 'Bitwarden CLI not found. Install it: winget install Bitwarden.CLI' }
     $status = (Read-Json (bw status)).status
@@ -88,8 +99,9 @@ function Save-Note([string]$app, [hashtable]$values) {
     $folder = $null
     foreach ($f in (Read-Json (bw list folders --search $folderName))) { if ($f.name -ceq $folderName) { $folder = $f } }
     if (-not $folder) {
-        $encoded = (ConvertTo-Json -InputObject @{ name = $folderName } -Compress) | bw encode
-        $folder = Read-Json (bw create folder $encoded)
+        $created = bw create folder (ConvertTo-BwEncoded @{ name = $folderName })
+        Assert-BwOk "create the folder '$folderName'"
+        $folder = Read-Json $created
         Write-Host "Created Bitwarden folder '$folderName'."
     }
     $fields = @()
@@ -98,8 +110,8 @@ function Save-Note([string]$app, [hashtable]$values) {
     if ($note) {
         $note | Add-Member -NotePropertyName fields -NotePropertyValue $fields -Force
         $note | Add-Member -NotePropertyName folderId -NotePropertyValue $folder.id -Force
-        $encoded = (ConvertTo-Json -InputObject $note -Depth 10 -Compress) | bw encode
-        bw edit item $note.id $encoded | Out-Null
+        bw edit item $note.id (ConvertTo-BwEncoded $note) | Out-Null
+        Assert-BwOk "update the note '$(Get-NoteName $app)'"
         Write-Host "Updated Bitwarden note '$(Get-NoteName $app)' in '$folderName' ($($fields.Count) fields)."
     } else {
         $item = @{
@@ -110,8 +122,8 @@ function Save-Note([string]$app, [hashtable]$values) {
             notes      = "Fly secrets of $app. One hidden field per secret; field name = variable name. Managed with ops/secrets/fly-secrets.ps1 (see ops/secrets/README.md)."
             fields     = $fields
         }
-        $encoded = (ConvertTo-Json -InputObject $item -Depth 10 -Compress) | bw encode
-        bw create item $encoded | Out-Null
+        bw create item (ConvertTo-BwEncoded $item) | Out-Null
+        Assert-BwOk "create the note '$(Get-NoteName $app)'"
         Write-Host "Created Bitwarden note '$(Get-NoteName $app)' in '$folderName' ($($fields.Count) fields)."
     }
 }
