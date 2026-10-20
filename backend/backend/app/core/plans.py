@@ -6,6 +6,7 @@ gets, so a 15 minute interview cannot ask 15 questions. Each plan also names the
 (see models.yaml) and, optionally, the only AI providers it may ever use.
 """
 
+import json
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -40,6 +41,8 @@ class Plan(BaseModel):
     # whatever models.yaml says. Leave unset for "any configured provider".
     llm_allowed_providers: list[str] | None = None
     refund: RefundRule = Field(default_factory=RefundRule)
+    # False keeps the plan out of GET /plans (grants such as referral or trial wallets are not for sale).
+    listed: bool = True
 
     @model_validator(mode="after")
     def default_is_allowed(self) -> "Plan":
@@ -58,11 +61,13 @@ class Sku(BaseModel):
     plan: str
     minutes: int = Field(ge=1)
     days: int = Field(ge=1)
+    listed: bool = True  # False: a grant the main app makes (referral, trial), not shown in GET /plans
 
 
 class PlansConfig(BaseModel):
     default_plan: str
     grace_seconds: int = Field(default=60, ge=0)
+    interview_minutes: int = Field(default=15, ge=1)  # the unit for the `pack_interviews` / `interviews` shorthand
     profiles: dict[int, DurationProfile]
     plans: dict[str, Plan]
     skus: dict[str, Sku] = Field(default_factory=dict)
@@ -108,18 +113,55 @@ class PlansConfig(BaseModel):
         return minutes
 
 
-def load_plans(path: Path) -> PlansConfig:
+def _deep_merge(base: dict, override: dict) -> dict:
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _expand_interviews(data: dict, unit: int) -> dict:
+    """Turn the ``pack_interviews`` / ``interviews`` shorthand into minutes (interviews x ``interview_minutes``)."""
+    for kind, shorthand, minutes_key in (("plans", "pack_interviews", "pack_minutes"), ("skus", "interviews", "minutes")):
+        for name, entry in (data.get(kind) or {}).items():
+            if shorthand not in entry:
+                continue
+            if minutes_key in entry:
+                raise ValueError(f"{kind} '{name}' sets both {shorthand} and {minutes_key}; use one")
+            entry = dict(entry)
+            entry[minutes_key] = entry.pop(shorthand) * unit
+            data[kind][name] = entry
+    return data
+
+
+def load_plans(path: Path, overrides: str = "") -> PlansConfig:
+    """Read plans.yaml, lay the optional ``PLANS_OVERRIDES`` JSON over it, then validate the result."""
     data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
-    return PlansConfig.model_validate(data)
+    patch: dict = {}
+    if overrides.strip():
+        try:
+            patch = json.loads(overrides)
+        except json.JSONDecodeError as error:
+            raise ValueError(f"PLANS_OVERRIDES is not valid JSON: {error}") from error
+        if not isinstance(patch, dict):
+            raise ValueError("PLANS_OVERRIDES must be a JSON object")
+    unit = int(patch.get("interview_minutes", data.get("interview_minutes", 15)))
+    # Expand each layer on its own, so an override written in interviews replaces a size the file wrote in minutes.
+    merged = _deep_merge(_expand_interviews(data, unit), _expand_interviews(patch, unit))
+    return PlansConfig.model_validate(merged)
 
 
 @lru_cache
-def _cached(path: str) -> PlansConfig:
-    return load_plans(Path(path))
+def _cached(path: str, overrides: str) -> PlansConfig:
+    return load_plans(Path(path), overrides)
 
 
 def get_plans() -> PlansConfig:
-    return _cached(str(get_settings().plans_config_path))
+    settings = get_settings()
+    return _cached(str(settings.plans_config_path), settings.plans_overrides)
 
 
 def validate_against_router(plans: PlansConfig, router_config) -> None:

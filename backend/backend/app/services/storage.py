@@ -479,6 +479,15 @@ class Store:
         )
         return "expired" if changed == 1 else "already_expired"
 
+    def pack_extend(self, tenant_id: str, external_ref: str, plan: str, *, until: int, now: int) -> bool:
+        """Move an ACTIVE pack's expiry out to `until`; never shortens it, never adds minutes. True if it moved."""
+        changed = self.db.execute_count(
+            "UPDATE packs SET expires_at = ?, updated_at = ? WHERE tenant_id = ? AND external_ref = ? AND plan = ? "
+            f"AND {self._ACTIVE} AND expires_at < ?",
+            (until, utc_now(), tenant_id, external_ref, plan, now, until),
+        )
+        return changed == 1
+
     def packs_erase(self, tenant_id: str, external_ref: str) -> dict[str, int]:
         """Delete every wallet and purchase record of one student (their account was deleted).
 

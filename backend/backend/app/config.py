@@ -105,6 +105,8 @@ class Settings(BaseSettings):
     # callers keep today's behaviour. When on, every interview needs an external_ref (the student id).
     plans_enabled: bool = False
     plans_config_path: Path = BASE_DIR / "plans.yaml"
+    # Optional JSON laid over plans.yaml (deep merge), to change a number without rebuilding the image.
+    plans_overrides: str = ""
     # Per-answer caps, always applied.
     max_answer_seconds: int = 180
     max_pause_seconds: int = 300  # the one pause a timed interview allows ends by itself after this

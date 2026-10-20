@@ -41,10 +41,19 @@ plans:
     default_duration: 15
     llm_profile: economy
     refund: {max_interviews_started: 1, max_minutes_used: 15, rule: all}
+  referral_economy:
+    pack_interviews: 1
+    pack_days: 7
+    durations: [15]
+    default_duration: 15
+    llm_profile: economy
+    refund: {max_interviews_started: 0, max_minutes_used: 0, rule: any}
+    listed: false
 skus:
   small: {plan: economy, minutes: 30, days: 10}
   big: {plan: economy, minutes: 90, days: 45}
   prem: {plan: premium, minutes: 60, days: 20}
+  referral_1_economy: {plan: referral_economy, interviews: 1, days: 7, listed: false}
 """
 
 ANSWER = (
@@ -299,7 +308,7 @@ def test_balance_lists_every_plan(client):
     response = client.get("/api/v1/packs/stu-1", headers=HEADERS).json()
     assert response["external_ref"] == "stu-1"
     by_plan = {item["plan"]: item for item in response["packs"]}
-    assert set(by_plan) == {"economy", "premium", "strict"}
+    assert set(by_plan) == {"economy", "premium", "strict", "referral_economy"}
     assert by_plan["economy"]["active"] is False and by_plan["economy"]["minutes_remaining"] == 0
     assert by_plan["premium"]["active"] is True and by_plan["premium"]["minutes_remaining"] == 60
 
@@ -777,3 +786,121 @@ def test_erasing_twice_or_a_stranger_is_a_harmless_no_op_and_others_keep_their_w
 
 def test_erasing_packs_needs_an_api_key(client):
     assert client.delete("/api/v1/packs/by-ref/stu-1").status_code == 401
+
+
+# ----------------------------------------------------------------------------- free grants (referral reward, trial)
+
+
+def test_a_referral_grant_is_one_15_minute_interview_for_7_days_in_its_own_wallet(client):
+    buy_sku(client, "big", payment_id="pi_1")  # the student already holds an Economy add-on
+    before = wallets(client)["economy"]
+    body = buy_sku(client, "referral_1_economy", payment_id="referral:abc:signup")
+    assert body["applied"] is True
+    assert body["pack"]["plan"] == "referral_economy"
+    assert body["pack"]["minutes_total"] == 15 and body["pack"]["allowed_durations"] == [15]
+    assert body["pack"]["days_remaining"] in (6, 7)
+    assert wallets(client)["economy"] == before  # minutes and expiry of the add-on wallet are untouched
+
+
+def test_a_replayed_referral_grant_applies_nothing(client):
+    buy_sku(client, "referral_1_economy", payment_id="referral:abc:signup")
+    again = buy_sku(client, "referral_1_economy", payment_id="referral:abc:signup")
+    assert again["applied"] is False
+    assert again["pack"]["minutes_total"] == 15
+
+
+def test_the_referral_interview_is_booked_and_a_failed_creation_gives_it_back(client):
+    buy_sku(client, "referral_1_economy", payment_id="referral:abc:signup")
+    client.fake_router.overrides["question_generation"] = {"questions": []}
+    create(client, plan="referral_economy", paid=False, expect=422)
+    client.fake_router.overrides.pop("question_generation")
+    state = pack(client, plan="referral_economy")
+    assert (state["minutes_used"], state["minutes_remaining"], state["interviews_started"]) == (0, 15, 0)
+    created = create(client, plan="referral_economy", paid=False)
+    config = stored(created["interview"]["id"])["config"]
+    assert (config["plan"], config["llm_profile"]) == ("referral_economy", "economy")
+    assert pack(client, plan="referral_economy")["minutes_remaining"] == 0
+    refused = create(client, plan="referral_economy", paid=False, expect=402)
+    assert refused["error"]["details"]["reason"] == "no_minutes_left"
+
+
+def test_a_referral_wallet_only_allows_15_minute_interviews(client):
+    buy_sku(client, "referral_1_economy", payment_id="referral:abc:signup")
+    create(client, plan="referral_economy", paid=False, expect=422, config={"duration_minutes": 20})
+
+
+def test_two_unused_referral_grants_stack_and_a_used_one_starts_fresh(client):
+    buy_sku(client, "referral_1_economy", payment_id="referral:a:signup")
+    stacked = buy_sku(client, "referral_1_economy", payment_id="referral:b:signup")["pack"]
+    assert stacked["minutes_total"] == 30 and stacked["days_remaining"] in (13, 14)
+    create(client, plan="referral_economy", paid=False)
+    create(client, plan="referral_economy", paid=False)
+    fresh = buy_sku(client, "referral_1_economy", payment_id="referral:c:signup")["pack"]
+    assert fresh["minutes_total"] == 15 and fresh["minutes_used"] == 0 and fresh["days_remaining"] in (6, 7)
+
+
+def test_expiring_the_referral_wallet_leaves_the_addon_wallet_alone(client):
+    buy_sku(client, "big", payment_id="pi_1")
+    buy_sku(client, "referral_1_economy", payment_id="referral:abc:signup")
+    assert expire(client, plan="referral_economy")["expired"] is True
+    assert wallets(client)["economy"]["active"] is True
+    assert wallets(client)["referral_economy"]["active"] is False
+
+
+def test_an_unused_referral_grant_can_be_revoked_but_a_used_one_cannot(client):
+    buy_sku(client, "referral_1_economy", payment_id="referral:a:signup")
+    assert revoke(client, plan="referral_economy", payment_id="referral:a:signup")["revoked"] is True
+    buy_sku(client, "referral_1_economy", payment_id="referral:b:signup")
+    create(client, plan="referral_economy", paid=False)
+    revoke(client, plan="referral_economy", payment_id="referral:b:signup", expect=409)
+
+
+def test_grants_are_not_listed_as_things_to_buy(client):
+    listing = client.get("/api/v1/plans", headers=HEADERS).json()
+    assert "referral_1_economy" not in {s["name"] for s in listing["skus"]}
+    assert "referral_economy" not in {p["name"] for p in listing["plans"]}
+    assert "referral_economy" in wallets(client)  # but the wallet still shows in a student's balances
+
+
+# ----------------------------------------------------------------------------- extend a wallet's expiry (no minutes)
+
+
+def extend(client, ref="stu-1", plan="referral_economy", days=35, expect=200):
+    response = client.post(
+        "/api/v1/packs/extend", json={"external_ref": ref, "plan": plan, "days": days}, headers=HEADERS
+    )
+    assert response.status_code == expect, response.text
+    return response.json()
+
+
+def test_extend_keeps_an_active_wallet_alive_without_adding_minutes(client):
+    buy_sku(client, "referral_1_economy", payment_id="referral:abc:signup")
+    body = extend(client)
+    assert body["extended"] is True
+    assert body["pack"]["minutes_total"] == 15 and body["pack"]["days_remaining"] in (34, 35)
+
+
+def test_extend_never_shortens_is_safe_to_repeat_and_touches_one_wallet(client):
+    buy_sku(client, "big", payment_id="pi_1")  # economy wallet, 45 days
+    buy_sku(client, "referral_1_economy", payment_id="referral:abc:signup")
+    assert extend(client, days=3)["extended"] is False  # already valid for 7 days
+    assert extend(client, days=30)["extended"] is True
+    assert extend(client, days=30)["extended"] is False  # same target again: nothing to move
+    assert wallets(client)["economy"]["days_remaining"] in (44, 45)
+
+
+def test_extend_ignores_expired_used_up_and_missing_wallets(client):
+    assert extend(client)["extended"] is False  # never granted
+    buy_sku(client, "referral_1_economy", payment_id="referral:abc:signup")
+    create(client, plan="referral_economy", paid=False)  # used up
+    assert extend(client)["extended"] is False
+    buy_sku(client, "referral_1_economy", payment_id="referral:b:signup")
+    expire(client, plan="referral_economy")
+    assert extend(client)["extended"] is False
+    assert wallets(client)["referral_economy"]["active"] is False
+
+
+def test_extend_validates_the_plan_and_days_and_needs_an_api_key(client):
+    extend(client, plan="platinum", expect=422)
+    extend(client, days=0, expect=422)
+    assert client.post("/api/v1/packs/extend", json={}).status_code == 401

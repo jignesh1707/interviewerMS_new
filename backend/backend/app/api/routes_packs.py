@@ -41,6 +41,12 @@ class ExpireRequest(BaseModel):
     plan: str = Field(min_length=1, max_length=64)
 
 
+class ExtendRequest(BaseModel):
+    external_ref: str = Field(min_length=1, max_length=200)
+    plan: str = Field(min_length=1, max_length=64)
+    days: int = Field(ge=1, le=366)
+
+
 def _packs():
     if not get_settings().plans_enabled:
         raise NotFoundError("plans are not enabled on this service")
@@ -74,6 +80,16 @@ async def expire_pack(payload: ExpireRequest, tenant: Tenant) -> dict:
     `expired: false`, so you can call this on every cancellation without checking first.
     """
     return await _packs().expire(tenant, payload.external_ref, payload.plan)
+
+
+@router.post("/extend")
+async def extend_pack(payload: ExtendRequest, tenant: Tenant) -> dict:
+    """Keep a student's pack alive until at least `days` from now. Adds no minutes; safe to repeat.
+
+    Only a pack that is still active (unexpired with minutes left) is extended, and it is never shortened. A student
+    with no active pack gets a harmless `extended: false`.
+    """
+    return await _packs().extend(tenant, payload.external_ref, payload.plan, payload.days)
 
 
 @router.delete("/by-ref/{external_ref}")
@@ -112,6 +128,8 @@ async def list_plans(tenant: Tenant) -> dict:
     router_config = get_router().config
     items = []
     for name, plan in plans.plans.items():
+        if not plan.listed:
+            continue
         providers = router_config.providers_in(plan.llm_profile)
         if plan.llm_allowed_providers is not None:
             providers &= set(plan.llm_allowed_providers)
@@ -131,5 +149,6 @@ async def list_plans(tenant: Tenant) -> dict:
     skus = [
         {"name": name, "plan": sku.plan, "minutes": sku.minutes, "days": sku.days}
         for name, sku in plans.skus.items()
+        if sku.listed
     ]
     return {"default_plan": plans.default_plan, "plans": items, "skus": skus}
