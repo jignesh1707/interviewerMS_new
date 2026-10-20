@@ -190,6 +190,13 @@ class PackService:
         outcome = await self.store.pack_expire(tenant_id, external_ref, plan_name, now=int(time.time()))
         return {"expired": outcome == "expired", "pack": await self.status(tenant_id, external_ref, plan_name)}
 
+    async def extend(self, tenant_id: str, external_ref: str, plan_name: str, days: int) -> dict[str, Any]:
+        """Push an active pack's expiry out to at least `days` from now (no minutes added). Idempotent."""
+        self.plans.plan(plan_name)
+        now = int(time.time())
+        changed = await self.store.pack_extend(tenant_id, external_ref, plan_name, until=now + days * DAY, now=now)
+        return {"extended": changed, "pack": await self.status(tenant_id, external_ref, plan_name)}
+
     async def revoke(self, tenant_id: str, external_ref: str, plan_name: str, *, payment_id: str) -> dict[str, Any]:
         plan = self.plans.plan(plan_name)
         rule = plan.refund

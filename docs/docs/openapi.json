@@ -598,6 +598,35 @@
         "title": "ExpireRequest",
         "type": "object"
       },
+      "ExtendRequest": {
+        "properties": {
+          "days": {
+            "maximum": 366.0,
+            "minimum": 1.0,
+            "title": "Days",
+            "type": "integer"
+          },
+          "external_ref": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "External Ref",
+            "type": "string"
+          },
+          "plan": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Plan",
+            "type": "string"
+          }
+        },
+        "required": [
+          "external_ref",
+          "plan",
+          "days"
+        ],
+        "title": "ExtendRequest",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -2846,6 +2875,84 @@
           }
         },
         "summary": "Expire Pack",
+        "tags": [
+          "packs"
+        ]
+      }
+    },
+    "/api/v1/packs/extend": {
+      "post": {
+        "description": "Keep a student's pack alive until at least `days` from now. Adds no minutes; safe to repeat.\n\nOnly a pack that is still active (unexpired with minutes left) is extended, and it is never shortened. A student\nwith no active pack gets a harmless `extended: false`.",
+        "operationId": "extend_pack_api_v1_packs_extend_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-API-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExtendRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Extend Pack Api V1 Packs Extend Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Extend Pack",
         "tags": [
           "packs"
         ]

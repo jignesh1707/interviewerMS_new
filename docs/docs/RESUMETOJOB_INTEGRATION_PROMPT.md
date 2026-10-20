@@ -43,8 +43,10 @@ A student can hold several wallets at once, and `GET /packs/{external_ref}` retu
 | Wallet (`plan`) | Lengths | How it is filled |
 |---|---|---|
 | `included_weekly` | 15 only | 30 min per paid weekly invoice (2 interviews), pack valid 14 days |
-| `included_monthly` | 15 only | 75 min per paid monthly invoice (5 interviews), pack valid 35 days |
-| `included_quarterly` | 15 only | 270 min per paid quarterly invoice (18 interviews), pack valid 100 days |
+| `included_monthly` | 15 only | 150 min per paid monthly invoice (10 interviews), pack valid 35 days |
+| `included_quarterly` | 15 only | 450 min per paid quarterly invoice (30 interviews), pack valid 100 days |
+| `referral_economy` | 15 only | sku `referral_1_economy`: 15 min (1 interview), valid 7 days; `payment_id` `referral:<uuid>:signup`; not in `GET /plans` |
+| `trial_economy` | 15 only | sku `trial_1_economy`: 15 min (1 interview with report), valid 7 days; `payment_id` `trial:<student>`; not in `GET /plans` |
 | `economy` | 15 / 20 / 25 | add-on purchases (skus below), valid 30 days each, Economy models |
 | `premium` | 15 / 20 / 25 | add-on purchases (skus below), valid 30 days each, Anthropic first |
 
@@ -85,6 +87,7 @@ with `/packs/revoke` using that purchase's `plan` and `payment_id`.
 | Balance / refund eligibility | `GET /packs/{external_ref}` |
 | Refund | `POST /packs/revoke` `{external_ref, plan, payment_id}` (409 `refund_not_allowed` = do NOT refund) |
 | Subscription ended | `POST /packs/expire` `{external_ref, plan}` (ends the pack now, minutes gone, not a refund, idempotent, `expired:false` if there was no pack) |
+| Keep a wallet alive | `POST /packs/extend` `{external_ref, plan, days}` (expiry moves out to at least `days` from now; no minutes added; never shortens; idempotent; `extended:false` if the wallet is missing, expired or used up) |
 | Start | `POST /interviews` `{role, candidate_name, resume_text, jd_text, external_ref, plan, consent_to_ai_processing: true, callback_url, metadata, config:{duration_minutes}}` → 201 with `interview.id`, `interview.deadline_at`, `questions[]` |
 | Read a question aloud (optional) | `POST /speech/synthesize` form field `text` → `audio/wav` |
 | Spoken answer | `POST /interviews/{id}/answers/audio` multipart `question_index`, `audio`, `duration_seconds` |
@@ -150,7 +153,7 @@ with `/packs/revoke` using that purchase's `plan` and `payment_id`.
   "reports are kept for 90 days"; after that the history row keeps score and readiness only.
 - **Test on a separate resumetojob staging app and database with Stripe test mode**, never against production data.
 
-0. **Five interviews are included with the monthly subscription ($29.99).** Plan `included_monthly` (75 minutes, 15-minute
+0. **Ten interviews are included with the monthly subscription ($29.99).** Plan `included_monthly` (150 minutes, 15-minute
    interviews). Grant it on every **paid** subscription invoice (first payment and renewals; never during the trial, on
    $0 invoices or on proration invoices from plan changes) with `payment_id` = the invoice id. **Unused interviews roll
    over while the student keeps subscribing. When the subscription ends (cancellation effective, or unpaid and
@@ -160,7 +163,7 @@ with `/packs/revoke` using that purchase's `plan` and `payment_id`.
    as `floor(minutes_remaining / 15)` and spend the included wallet before any bought `economy` pack. This changes
    `CLAUDE.md` section 11 (voice interview "never bundled"): update that sentence in the repo as part of Phase 1.
    **Weekly** subscribers get `included_weekly` (2 interviews) and **quarterly** subscribers get `included_quarterly`
-   (18 interviews), under exactly the same rules. When a student switches billing period, expire the old plan when its
+   (30 interviews), under exactly the same rules. When a student switches billing period, expire the old plan when its
    subscription ends and grant the new one on its first paid invoice.
    **When the subscription ends, call `/packs/expire` for ALL THREE included plans** (it is a harmless no-op for the ones the
    student never had). **A switch between billing periods on the same Stripe subscription** (weekly to monthly through the

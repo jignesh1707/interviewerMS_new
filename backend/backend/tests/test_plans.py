@@ -158,7 +158,7 @@ def test_shipped_subscription_and_addon_offers():
     config = load_plans(BASE_DIR / "plans.yaml")
     included = {name: (config.plan(name).pack_minutes // 15, config.plan(name).pack_days)
                 for name in ("included_weekly", "included_monthly", "included_quarterly")}
-    assert included == {"included_weekly": (2, 14), "included_monthly": (5, 35), "included_quarterly": (18, 100)}
+    assert included == {"included_weekly": (2, 14), "included_monthly": (10, 35), "included_quarterly": (30, 100)}
     for name in included:
         assert config.plan(name).durations == [15]  # whole 15-minute interviews only
         assert set(config.plan(name).llm_allowed_providers) == {"openai", "anthropic"}
@@ -168,4 +168,48 @@ def test_shipped_subscription_and_addon_offers():
         "addon_10_premium": ("premium", 75, 30),  # 5 x 15 minutes with Anthropic
         "addon_20_economy": ("economy", 650, 30),
         "addon_20_premium": ("premium", 250, 30),  # 10 x 25 minutes with Anthropic
+        "referral_1_economy": ("referral_economy", 15, 7),  # free: one 15-minute interview, 7 days
+        "trial_1_economy": ("trial_economy", 15, 7),
     }
+    for name in ("referral_economy", "trial_economy"):
+        grant = config.plan(name)
+        assert (grant.pack_minutes, grant.pack_days, grant.durations) == (15, 7, [15])
+        assert grant.listed is False and grant.llm_profile == "economy"
+        assert set(grant.llm_allowed_providers) == {"openai", "anthropic"}
+    assert not config.skus["referral_1_economy"].listed and not config.skus["trial_1_economy"].listed
+    assert config.skus["addon_5"].listed and config.plan("economy").listed
+
+
+def test_interviews_shorthand_counts_in_interview_minutes(tmp_path):
+    text = PLANS_YAML.replace("pack_minutes: 150", "pack_interviews: 3") + """
+interview_minutes: 10
+skus:
+  x: {plan: economy, interviews: 2, days: 5}
+"""
+    config = load_plans(_write(tmp_path, text))
+    assert config.plan("economy").pack_minutes == 30 and config.sku("x").minutes == 20
+
+
+def test_the_shorthand_and_explicit_minutes_cannot_both_be_set(tmp_path):
+    text = PLANS_YAML + """
+skus:
+  x: {plan: economy, interviews: 2, minutes: 30, days: 5}
+"""
+    with pytest.raises(ValueError):
+        load_plans(_write(tmp_path, text))
+
+
+def test_overrides_are_merged_over_the_file(tmp_path):
+    path = _write(tmp_path, SKU_YAML)
+    patch = '{"skus": {"big": {"days": 60}}, "plans": {"economy": {"pack_interviews": 4}}}'
+    config = load_plans(path, patch)
+    assert (config.sku("big").minutes, config.sku("big").days) == (90, 60)  # only days changed
+    assert config.plan("economy").pack_minutes == 60
+    assert load_plans(path, "").sku("big").days == 45  # no override: the file as it is
+
+
+def test_bad_overrides_stop_the_load(tmp_path):
+    path = _write(tmp_path, SKU_YAML)
+    for patch in ("not json", "[1]", '{"skus": {"big": {"days": 0}}}', '{"skus": {"big": {"plan": "gold"}}}'):
+        with pytest.raises(ValueError):
+            load_plans(path, patch)

@@ -5,14 +5,25 @@
 #   - Booking an interview debits its full length, so 150 minutes is 10 x 15, 8 x 20 or 6 x 25 minute interviews.
 #   - Buying again while the pack is still active STACKS: minutes are added and the expiry is pushed back by
 #     `pack_days` (no days are lost). Buying after the pack expired or was used up starts a fresh pack.
-#   - Nobody gets minutes without a recorded payment: no pack means no interviews (trial users get none).
+#   - Nobody gets minutes unless the main app records a grant: no pack means no interviews. Free interviews (a trial
+#     or a referral reward) are such grants too: the main app calls /packs/activate with a free sku and a payment_id
+#     of its own making (e.g. "trial:<student>" or "referral:<id>:signup"), which also makes the grant once-only.
 #
-# Three kinds of wallet (a wallet is one plan for one student):
+# HOW TO CHANGE THE NUMBERS. Write sizes in interviews (`pack_interviews` on a plan, `interviews` on a sku); one
+# interview is `interview_minutes` (15) minutes. To change a number without rebuilding the image, set PLANS_OVERRIDES to
+# JSON that is laid over this file, e.g.
+#   PLANS_OVERRIDES='{"plans":{"included_monthly":{"pack_interviews":12}},"skus":{"referral_1_economy":{"days":14}}}'
+# and restart. A bad value stops the service at startup. Existing wallets keep their size; new grants use the new one.
+#
+# Four kinds of wallet (a wallet is one plan for one student):
 #   included_weekly / included_monthly / included_quarterly: interviews that come WITH a subscription. They roll over while
 #       the student keeps subscribing and are gone (POST /packs/expire) when the subscription ends. Economy models only.
 #   economy / premium: add-ons the student buys on top. The size depends on the product bought, so purchases name a `sku`
 #       (see `skus` at the bottom) instead of a plan. They are valid for the days of the sku and survive the end of a
 #       subscription.
+#   referral_economy / trial_economy: free single interviews (a referral reward, a free-trial interview). Each is its
+#       own wallet so its short expiry never touches an add-on or subscription wallet; `listed: false` keeps them out
+#       of GET /plans. The main app books these interviews with `plan: referral_economy` / `trial_economy`.
 # A student can hold several wallets at once; the main app chooses which one an interview is booked on (`plan` on create).
 #
 # `llm_profile` picks the model list from models.yaml. `llm_allowed_providers` is a hard promise about where a
@@ -30,6 +41,7 @@
 
 default_plan: economy
 grace_seconds: 60
+interview_minutes: 15   # one "interview" in pack_interviews / interviews
 
 profiles:
   15: {question_count: 5, max_followups: 1}
@@ -55,25 +67,25 @@ plans:
     llm_allowed_providers: [anthropic, openai]
     refund: {max_interviews_started: 1, max_minutes_used: 15, rule: any}
 
-  # Included with the monthly subscription: five 15-minute interviews a month, never sold separately. The main app calls
+  # Included with the monthly subscription: ten 15-minute interviews a month, never sold separately. The main app calls
   # /packs/activate with this plan on every PAID subscription invoice (payment_id = the invoice id) and
   # /packs/expire when the subscription ends. pack_days is longer than any billing month (28-31 days) plus a few days
   # for payment retries, so each renewal arrives while the old pack is still active and unused minutes roll over for
   # as long as the student stays subscribed. The refund rule is wide open: refunding a subscription is the main app's
   # decision and /packs/revoke must then always succeed.
   included_monthly:
-    pack_minutes: 75
+    pack_interviews: 10
     pack_days: 35
     durations: [15]
     default_duration: 15
     llm_profile: economy
     llm_allowed_providers: [openai, anthropic]
-    refund: {max_interviews_started: 99, max_minutes_used: 75, rule: any}
+    refund: {max_interviews_started: 99, max_minutes_used: 150, rule: any}
 
   # Included with the weekly subscription: two 15-minute interviews a week. pack_days is longer than a week plus payment
   # retries, so every renewal stacks onto the old pack (rollover while subscribed).
   included_weekly:
-    pack_minutes: 30
+    pack_interviews: 2
     pack_days: 14
     durations: [15]
     default_duration: 15
@@ -81,15 +93,41 @@ plans:
     llm_allowed_providers: [openai, anthropic]
     refund: {max_interviews_started: 99, max_minutes_used: 30, rule: any}
 
-  # Included with the quarterly subscription: eighteen 15-minute interviews a quarter (a quarter is 90 to 92 days).
+  # Included with the quarterly subscription: thirty 15-minute interviews a quarter (a quarter is 90 to 92 days).
   included_quarterly:
-    pack_minutes: 270
+    pack_interviews: 30
     pack_days: 100
     durations: [15]
     default_duration: 15
     llm_profile: economy
     llm_allowed_providers: [openai, anthropic]
-    refund: {max_interviews_started: 99, max_minutes_used: 270, rule: any}
+    refund: {max_interviews_started: 99, max_minutes_used: 450, rule: any}
+
+  # Free single interviews, each in its own wallet so the short expiry cannot shorten or lengthen any other wallet
+  # (a grant into an ACTIVE wallet adds its days to that wallet's expiry). One 15-minute interview: fits 15 exactly, so
+  # no minutes are ever stranded, and it is the cheapest to serve. Two grants while the first is unused stack (2 interviews,
+  # +7 days). The refund rule allows /packs/revoke only while the interview has not been started.
+  #   referral_economy: reward for a referral; the main app sends sku referral_1_economy, payment_id "referral:<id>:signup".
+  #   trial_economy:    the free-trial interview (with report); sku trial_1_economy, payment_id "trial:<student>".
+  referral_economy:
+    pack_interviews: 1
+    pack_days: 7
+    durations: [15]
+    default_duration: 15
+    llm_profile: economy
+    llm_allowed_providers: [openai, anthropic]
+    refund: {max_interviews_started: 0, max_minutes_used: 0, rule: any}
+    listed: false
+
+  trial_economy:
+    pack_interviews: 1
+    pack_days: 7
+    durations: [15]
+    default_duration: 15
+    llm_profile: economy
+    llm_allowed_providers: [openai, anthropic]
+    refund: {max_interviews_started: 0, max_minutes_used: 0, rule: any}
+    listed: false
 
 # Products the main app sells on top of a subscription. Each purchase is ONE sku and ONE payment. activate takes the sku;
 # the size comes from here, so the main app never sends a number of minutes. Interviews are booked in whole lengths from
@@ -111,3 +149,9 @@ skus:
     {plan: economy, minutes: 650, days: 30}
   addon_20_premium:
     {plan: premium, minutes: 250, days: 30}
+
+# Free grants (not for sale: `listed: false` keeps them out of GET /plans). The main app activates these itself.
+  referral_1_economy:
+    {plan: referral_economy, interviews: 1, days: 7, listed: false}
+  trial_1_economy:
+    {plan: trial_economy, interviews: 1, days: 7, listed: false}

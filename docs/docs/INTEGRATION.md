@@ -145,7 +145,8 @@ A student gets a **pack** of interview minutes that expires after a number of da
 |---|---|---|
 | `economy` (add-on wallet) | sold through skus; 150 minutes, 30 days when activated as a plan | OpenAI GPT-6 Luna directly, then OpenAI gpt-4.1-nano directly, then Anthropic. **Never DeepSeek or OpenRouter.** |
 | `premium` (add-on wallet) | sold through skus; 250 minutes, 30 days when activated as a plan | Anthropic, then OpenAI. **Never DeepSeek.** |
-| `included_monthly` (with the monthly subscription) | 75 minutes, 35 days, 15-minute interviews only | Same as `economy`. See below. |
+| `included_monthly` (with the monthly subscription) | 150 minutes (10 interviews), 35 days, 15-minute interviews only | Same as `economy`. See below. |
+| `referral_economy`, `trial_economy` (free grants, not for sale) | 15 minutes (1 interview), 7 days, 15-minute interviews only | Same as `economy`. See "Free interviews" below. |
 
 ```yaml
 # plans.yaml
@@ -178,7 +179,7 @@ plans:
    - `payment_id` is your Stripe event or payment id. **A replay is applied once** (`"applied": false`), so webhook retries are safe.
    - `purchased_at` is when the student paid (with a timezone), so expiry is the same however late the call arrives.
    - **Buying again stacks.** While the pack is still active, the new minutes are added and the expiry is pushed back by another `pack_days` (no days are lost). If the old pack expired or was used up, a fresh pack starts at the purchase date and leftovers are forfeited.
-   - Trial users get nothing: only call this for a real payment.
+   - Trial users get nothing from a payment call: only call it for a real payment. A free trial interview is a separate, explicit grant (see "Free interviews" below).
 2. **The student clicks "Start interview"** in the main app. Ask the service first, to decide what to show:
 
    ```bash
@@ -213,7 +214,7 @@ plans:
 
 ### Included with a subscription (`included_monthly`)
 
-The shipped `plans.yaml` has an `included_monthly` plan: **75 minutes, 15-minute interviews only, so exactly five
+The shipped `plans.yaml` has an `included_monthly` plan: **150 minutes, 15-minute interviews only, so exactly ten
 interviews**, 35 days, Economy models. It is meant to be granted with a paid monthly subscription, never sold alone.
 
 - **Grant:** on every **paid** subscription invoice (a first payment or a renewal, amount above zero) call
@@ -230,8 +231,8 @@ interviews**, 35 days, Economy models. It is meant to be granted with a paid mon
 - **Two balances:** a student who also bought an `economy` pack has two separate wallets. Spend the included one first
   in your app and show both.
 - **Weekly and quarterly subscriptions** have their own plans, granted exactly the same way (paid invoice id, expire when
-  the subscription ends): `included_weekly` (2 interviews = 30 minutes, 14 days) and `included_quarterly` (18 interviews =
-  270 minutes, 100 days). If a student changes from one billing period to another, expire the old plan when its
+  the subscription ends): `included_weekly` (2 interviews = 30 minutes, 14 days) and `included_quarterly` (30 interviews =
+  450 minutes, 100 days). If a student changes from one billing period to another, expire the old plan when its
   subscription ends and grant the new one on its first paid invoice.
 
 ### Add-ons of different sizes (`sku`)
@@ -264,7 +265,44 @@ curl -sX POST http://localhost:8080/api/v1/packs/activate -H "X-API-Key: $KEY" -
   allows 20 and 25 minute interviews, so a student can spend the same minutes as fewer, longer interviews.
 - Add-on wallets are valid for the days of the sku and are **not** affected by `/packs/expire` of an included plan: a
   student keeps what they bought when the subscription ends.
-- `GET /plans` lists the skus (`name`, `plan`, `minutes`, `days`) next to the plans.
+- `GET /plans` lists the skus (`name`, `plan`, `minutes`, `days`) next to the plans. Free grants (below) are marked
+  `listed: false` in `plans.yaml` and are left out of this listing.
+
+### Free interviews (referral reward, free trial)
+
+Two skus grant one free Economy interview. They are not for sale, so they are not in `GET /plans`.
+
+| sku | Wallet (`plan`) | Minutes | Days | Use |
+|---|---|---|---|---|
+| `referral_1_economy` | `referral_economy` | 15 | 7 | reward for one referral; `payment_id` = `referral:<referral_uuid>:signup` |
+| `trial_1_economy` | `trial_economy` | 15 | 7 | one free interview (with report) for a free-trial user; `payment_id` = `trial:<student>` |
+
+```bash
+curl -sX POST http://localhost:8080/api/v1/packs/activate -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"external_ref": "STUDENT_HASH", "sku": "referral_1_economy", "payment_id": "referral:6f1c...:signup", "purchased_at": "2026-10-20T12:00:00Z"}'
+```
+
+- **Each is its own wallet.** Wallets of the same plan stack (minutes are added and the old expiry is pushed back by
+  the sku's days, not replaced by the later date), so a grant put into `economy` would change an add-on wallet. Own
+  plans keep each wallet's minutes and expiry separate, and `POST /packs/expire` can target them by plan.
+- **Idempotent on `payment_id`** like any activation: a replay returns `applied: false` and grants nothing. Ids are
+  unique per tenant across all grants, so keep the prefixes above.
+- **Book it with `plan: referral_economy` (or `trial_economy`)**; the service never picks a wallet for you. 15 minutes
+  only. Two unused referral grants stack (2 interviews, expiry +7 days); after the interview is used or the wallet
+  expired, a new grant starts a fresh 7 days.
+- **Refund:** if creation fails the 15 minutes go back to the same wallet. A later failure (report fails, the student
+  quits) refunds nothing, for any wallet. `/packs/revoke` works on a grant only while its interview has not started.
+- **Keep a wallet alive:** `POST /packs/extend` `{external_ref, plan, days}` moves an active wallet's expiry out to at least
+  `days` from now. It adds no minutes, never shortens, is safe to repeat, and returns `extended: false` for a missing,
+  expired or used-up wallet. Example: `{"plan": "referral_economy", "days": 35}` when the referrer subscribes.
+
+### Changing the numbers
+
+Everything above lives in `plans.yaml`. Write sizes in interviews (`pack_interviews` on a plan, `interviews` on a sku;
+one interview is `interview_minutes`, 15) or in minutes. To change a number without rebuilding the image, set
+`PLANS_OVERRIDES` to JSON that is laid over the file and restart, for example
+`{"plans":{"included_monthly":{"pack_interviews":12}},"skus":{"referral_1_economy":{"days":14}}}`. A bad value stops
+the service at startup. Existing wallets keep their size; only new grants use the new numbers.
 
 The refund rule in `plans.yaml` is `rule: any`: refundable while **either** at most `max_interviews_started` interview has been started **or** at most `max_minutes_used` booked minutes are used. `rule: all` needs both. Used minutes are the booked length, not the time actually spoken.
 
