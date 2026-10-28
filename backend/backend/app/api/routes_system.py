@@ -1,3 +1,5 @@
+import os
+
 from fastapi import APIRouter, Depends
 
 from app.api.deps import require_api_key
@@ -15,7 +17,9 @@ router = APIRouter(tags=["system"])
 
 @router.get("/health")
 async def health() -> dict:
-    return {"status": "ok", "service": get_settings().app_name}
+    # GIT_SHA is baked in at image build time (Dockerfile ARG). An image built
+    # without it carries an empty value, which is as unknown as an unset one.
+    return {"status": "ok", "service": get_settings().app_name, "release": os.environ.get("GIT_SHA") or "unknown"}
 
 
 @router.get("/ready")

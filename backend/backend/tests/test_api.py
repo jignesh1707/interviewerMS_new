@@ -44,6 +44,22 @@ def test_health_is_public(client):
     assert response.json()["status"] == "ok"
 
 
+def test_health_reports_the_release_from_git_sha(client, monkeypatch):
+    monkeypatch.setenv("GIT_SHA", "981b94d1f2e3d4a5b6c7d8e9f0a1b2c3d4e5f6a7")
+    response = client.get("/api/v1/health")
+    assert response.json()["release"] == "981b94d1f2e3d4a5b6c7d8e9f0a1b2c3d4e5f6a7"
+
+
+@pytest.mark.parametrize("value", [None, ""])  # unset, or an unpassed build arg baked in as ""
+def test_health_reports_release_unknown_when_git_sha_is_missing(client, monkeypatch, value):
+    if value is None:
+        monkeypatch.delenv("GIT_SHA", raising=False)
+    else:
+        monkeypatch.setenv("GIT_SHA", value)
+    response = client.get("/api/v1/health")
+    assert response.json()["release"] == "unknown"
+
+
 def test_create_requires_api_key(client):
     response = client.post("/api/v1/interviews", json={"role": "Backend Engineer"})
     assert response.status_code == 401

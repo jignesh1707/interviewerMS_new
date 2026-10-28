@@ -45,6 +45,12 @@ ENV WHISPER_MODEL=/opt/models/whisper \
 COPY app ./app
 COPY models.yaml plans.yaml ./
 
+# The commit this image was built from, reported by /api/v1/health as "release". Declared after the
+# model download so a new SHA does not invalidate the cached layers above it.
+# Pass it at build time: fly deploy --build-arg GIT_SHA=$(git rev-parse HEAD)
+ARG GIT_SHA
+ENV GIT_SHA=${GIT_SHA}
+
 # Run as an unprivileged user; /data is the only writable location (plus /tmp).
 RUN useradd --system --uid 10001 --no-create-home appuser \
     && mkdir /data && chown appuser /data
