@@ -47,10 +47,14 @@ fly secrets set -a interviewer-ms-staging \
   DATABASE_URL='postgresql://interviewer_app.<ref>:<pw>@aws-0-<region>.pooler.supabase.com:6543/postgres?sslmode=require' \
   REDIS_URL='rediss://default:<token>@<name>.upstash.io:6379' \
   ANTHROPIC_API_KEY='...' OPENAI_API_KEY='...'
-fly deploy -a interviewer-ms-staging --no-public-ips
+fly deploy -a interviewer-ms-staging --no-public-ips --build-arg GIT_SHA=$(git rev-parse HEAD)
 fly ips allocate-v6 --private -a interviewer-ms-staging
 fly status -a interviewer-ms-staging
 ```
+
+Every deploy passes `--build-arg GIT_SHA=$(git rev-parse HEAD)`. The commit shows up in `GET /api/v1/health` as
+`release` (`unknown` when the build arg was left off), so `curl .../api/v1/health` tells you which build is running.
+Deploy from a clean checkout of the commit you mean to ship.
 
 Expect two machines, both with passing checks. The first start of a machine loads the speech model in the background:
 `/api/v1/ready` answers 503 ("speech model is still loading") until it is done, then 200. A cold start can take up to
@@ -159,7 +163,7 @@ when they are idle (`auto_stop_machines = "stop"`, `min_machines_running = 1`, `
 machines that already exist, so create the spares once and let them stop:
 
 ```bash
-fly deploy -a interviewer-ms-staging --no-public-ips          # applies the new fly.toml
+fly deploy -a interviewer-ms-staging --no-public-ips --build-arg GIT_SHA=$(git rev-parse HEAD)   # applies the new fly.toml
 fly scale count 3 -a interviewer-ms-staging                   # one always on, two spares
 fly status -a interviewer-ms-staging                          # wait about 5 to 10 minutes idle, then check again
 ```
