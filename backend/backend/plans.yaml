@@ -24,6 +24,8 @@
 #   referral_economy / trial_economy: free single interviews (a referral reward, a free-trial interview). Each is its
 #       own wallet so its short expiry never touches an add-on or subscription wallet; `listed: false` keeps them out
 #       of GET /plans. The main app books these interviews with `plan: referral_economy` / `trial_economy`.
+#   admin_grant_economy / admin_grant_premium: minutes an operator hands out from the main app's cockpit (support, goodwill).
+#       Own wallets, so a grant never stretches the expiry of a paid pack, and never listed. 60 minutes, 14 days, any length.
 # A student can hold several wallets at once; the main app chooses which one an interview is booked on (`plan` on create).
 #
 # `llm_profile` picks the model list from models.yaml. `llm_allowed_providers` is a hard promise about where a
@@ -129,6 +131,30 @@ plans:
     refund: {max_interviews_started: 0, max_minutes_used: 0, rule: any}
     listed: false
 
+  # Operator grants (the main app's cockpit "Grant free minutes", super-admin only, audited and rate-limited THERE). One
+  # wallet per model tier so the grant uses the model tier the operator picked. The main app sends sku admin_grant_60_economy
+  # or admin_grant_60_premium with a payment_id of its own making ("admin:<uuid>"), which makes each grant once-only. The
+  # refund rule is wide open (like the included_* wallets): /packs/revoke must always work so a mistaken grant can be undone.
+  admin_grant_economy:
+    pack_minutes: 60
+    pack_days: 14
+    durations: [15, 20, 25]
+    default_duration: 15
+    llm_profile: economy
+    llm_allowed_providers: [openai, anthropic]
+    refund: {max_interviews_started: 99, max_minutes_used: 60, rule: any}
+    listed: false
+
+  admin_grant_premium:
+    pack_minutes: 60
+    pack_days: 14
+    durations: [15, 20, 25]
+    default_duration: 15
+    llm_profile: premium
+    llm_allowed_providers: [anthropic, openai]
+    refund: {max_interviews_started: 99, max_minutes_used: 60, rule: any}
+    listed: false
+
 # Products the main app sells on top of a subscription. Each purchase is ONE sku and ONE payment. activate takes the sku;
 # the size comes from here, so the main app never sends a number of minutes. Interviews are booked in whole lengths from
 # the wallet, so "10 x 15 minutes" is 150 minutes; a student may also spend them as 20 or 25 minute interviews because the
@@ -155,3 +181,9 @@ skus:
     {plan: referral_economy, interviews: 1, days: 7, listed: false}
   trial_1_economy:
     {plan: trial_economy, interviews: 1, days: 7, listed: false}
+
+# Operator grants (not for sale). 60 minutes valid for 14 days, in their own wallet.
+  admin_grant_60_economy:
+    {plan: admin_grant_economy, minutes: 60, days: 14, listed: false}
+  admin_grant_60_premium:
+    {plan: admin_grant_premium, minutes: 60, days: 14, listed: false}
