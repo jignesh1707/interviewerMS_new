@@ -147,6 +147,7 @@ A student gets a **pack** of interview minutes that expires after a number of da
 | `premium` (add-on wallet) | sold through skus; 250 minutes, 30 days when activated as a plan | Anthropic, then OpenAI. **Never DeepSeek.** |
 | `included_monthly` (with the monthly subscription) | 150 minutes (10 interviews), 35 days, 15-minute interviews only | Same as `economy`. See below. |
 | `referral_economy`, `trial_economy` (free grants, not for sale) | 15 minutes (1 interview), 7 days, 15-minute interviews only | Same as `economy`. See "Free interviews" below. |
+| `admin_grant_economy`, `admin_grant_premium` (operator grants, not for sale) | 60 minutes, 14 days, 15/20/25-minute interviews | Same as `economy` / `premium`. Refund rule wide open, so `/packs/revoke` always works. See the sku table below. |
 
 ```yaml
 # plans.yaml
@@ -276,6 +277,8 @@ Two skus grant one free Economy interview. They are not for sale, so they are no
 |---|---|---|---|---|
 | `referral_1_economy` | `referral_economy` | 15 | 7 | reward for one referral; `payment_id` = `referral:<referral_uuid>:signup` |
 | `trial_1_economy` | `trial_economy` | 15 | 7 | one free interview (with report) for a free-trial user; `payment_id` = `trial:<student>` |
+| `admin_grant_60_economy` | `admin_grant_economy` | 60 | 14 | operator grant from the main app's cockpit; `payment_id` = `admin:<uuid>` |
+| `admin_grant_60_premium` | `admin_grant_premium` | 60 | 14 | same, on the Premium (Anthropic first) model tier |
 
 ```bash
 curl -sX POST http://localhost:8080/api/v1/packs/activate -H "X-API-Key: $KEY" -H "Content-Type: application/json" \

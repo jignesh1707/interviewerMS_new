@@ -170,6 +170,8 @@ def test_shipped_subscription_and_addon_offers():
         "addon_20_premium": ("premium", 250, 30),  # 10 x 25 minutes with Anthropic
         "referral_1_economy": ("referral_economy", 15, 7),  # free: one 15-minute interview, 7 days
         "trial_1_economy": ("trial_economy", 15, 7),
+        "admin_grant_60_economy": ("admin_grant_economy", 60, 14),  # operator grant from the cockpit
+        "admin_grant_60_premium": ("admin_grant_premium", 60, 14),
     }
     for name in ("referral_economy", "trial_economy"):
         grant = config.plan(name)
@@ -177,6 +179,18 @@ def test_shipped_subscription_and_addon_offers():
         assert grant.listed is False and grant.llm_profile == "economy"
         assert set(grant.llm_allowed_providers) == {"openai", "anthropic"}
     assert not config.skus["referral_1_economy"].listed and not config.skus["trial_1_economy"].listed
+    for name, providers in (
+        ("admin_grant_economy", {"openai", "anthropic"}),
+        ("admin_grant_premium", {"anthropic", "openai"}),
+    ):
+        grant = config.plan(name)
+        assert (grant.pack_minutes, grant.pack_days, grant.durations) == (60, 14, [15, 20, 25])
+        assert grant.default_duration == 15 and grant.listed is False
+        assert set(grant.llm_allowed_providers) == providers
+    assert config.plan("admin_grant_economy").llm_profile == "economy"
+    assert config.plan("admin_grant_premium").llm_profile == "premium"
+    assert config.plan("admin_grant_premium").llm_allowed_providers == ["anthropic", "openai"]  # Anthropic first
+    assert not config.skus["admin_grant_60_economy"].listed and not config.skus["admin_grant_60_premium"].listed
     assert config.skus["addon_5"].listed and config.plan("economy").listed
 
 
