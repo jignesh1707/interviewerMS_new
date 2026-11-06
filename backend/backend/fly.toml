@@ -39,16 +39,22 @@ primary_region = "iad"
 [[services]]
   protocol = "tcp"
   internal_port = 8080
-  # Capacity follows load. One machine always runs. The others are created once (`fly scale count 3`) and stay stopped
-  # until Fly's proxy sees every running machine at the soft limit below; it then starts one, and stops idle ones
-  # again. Interview state lives in Postgres, not in the machine, so stopping one loses nothing; the only thing in a
-  # machine's memory is a report being built, and if a machine is stopped during that, another takes it over after
-  # FINISH_STALE_SECONDS. A started machine needs about a minute to load the speech model, so this absorbs a gradual
-  # rise in students, not a burst in the same second. See docs/docs/STAGING.md section 10 for the test.
+  # Capacity follows load, and the service SLEEPS when idle (min 0): with no interview in progress Fly's proxy stops
+  # every machine, and the next request starts one. The main app expects this (Resumeto V-SLEEP, #495): its interview
+  # page wakes the service when a student opens it and shows "Getting your interviewer ready" for the ~60 s the speech
+  # model needs to load, a start is refused as "busy" until /ready answers 200, and its health collector does not probe
+  # a stopped machine. The other machines are created once (`fly scale count 3`) and stay stopped until Fly's proxy
+  # sees every running machine at the soft limit below; it then starts one, and stops idle ones again. Interview state
+  # lives in Postgres, not in the machine, so stopping one loses nothing; the only thing in a machine's memory is a
+  # report being built, and if a machine is stopped during that, the sweeper on the next running machine takes it over
+  # after FINISH_STALE_SECONDS. With every machine stopped, the main app's 5-minute reconcile asks about the
+  # `processing` interview, which starts a machine, and its sweeper finishes the report. This absorbs a gradual rise in
+  # students, not a burst in the same second. See docs/docs/STAGING.md section 10 for the test.
+  # To keep one machine always on again (no ~60 s wait for the first student), set min_machines_running = 1.
   # For a fixed number of always-on machines set auto_stop_machines = "off" and min_machines_running = that number.
   auto_stop_machines = "stop"
   auto_start_machines = true
-  min_machines_running = 1
+  min_machines_running = 0
 
   [services.concurrency]
     type = "requests"
