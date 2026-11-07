@@ -51,7 +51,7 @@ profiles:
   25: {question_count: 9, max_followups: 3}
 
 plans:
-  economy:          # add-on wallet (see skus); OpenAI GPT-6 Luna, then OpenAI gpt-4.1-nano, then Anthropic. Never DeepSeek or OpenRouter.
+  economy:          # add-on wallet (see skus); OpenAI GPT-6 Luna, then OpenAI GPT-5.6 Luna, then Anthropic Claude Haiku 4.5. Never DeepSeek or OpenRouter.
     pack_minutes: 150
     pack_days: 30
     durations: [15, 20, 25]
