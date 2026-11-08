@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from app.api import routes_interviews, routes_packs, routes_speech, routes_system
 from app.config import get_settings
 from app.core.errors import AppError
+from app.core.light_mode import LightModeMiddleware
 from app.core.limits import BodyLimitMiddleware
 from app.core.logging import configure_logging, get_logger
 
@@ -24,17 +25,23 @@ async def lifespan(_: FastAPI):
         from app.llm.router import load_router_config
 
         validate_against_router(get_plans(), load_router_config(settings.models_config_path))
-    tasks = [asyncio.create_task(_build_sweep_loop())]
-    if settings.stt_preload:
-        from app.voice import stt
+    tasks: list[asyncio.Task] = []
+    if settings.light_mode:
+        # A light instance only answers cheap reads: no speech model, and none of the background work (building
+        # reports needs AI provider keys it does not have; the big machines do the sweeping and the outbox).
+        logger.info("light_mode_enabled background_loops=none stt_preload=off")
+    else:
+        tasks.append(asyncio.create_task(_build_sweep_loop()))
+        if settings.stt_preload:
+            from app.voice import stt
 
-        tasks.append(stt.begin_preload())
-    if settings.retention_days > 0:
-        tasks.append(asyncio.create_task(_retention_loop()))
-    if settings.webhook_outbox_worker:
-        from app.services import webhook
+            tasks.append(stt.begin_preload())
+        if settings.retention_days > 0:
+            tasks.append(asyncio.create_task(_retention_loop()))
+        if settings.webhook_outbox_worker:
+            from app.services import webhook
 
-        tasks.append(asyncio.create_task(webhook.outbox_loop()))
+            tasks.append(asyncio.create_task(webhook.outbox_loop()))
     try:
         yield
     finally:
@@ -82,6 +89,9 @@ app.add_middleware(
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["X-API-Key", "Authorization", "Content-Type"],
 )
+# Added last so it is the outermost layer: in light mode a refused request is turned away before anything else
+# (including the body-size check and CORS) touches it. A no-op while LIGHT_MODE is off.
+app.add_middleware(LightModeMiddleware)
 
 
 @app.exception_handler(AppError)

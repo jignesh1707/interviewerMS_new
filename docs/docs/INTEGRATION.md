@@ -331,6 +331,55 @@ The refund rule in `plans.yaml` is `rule: any`: refundable while **either** at m
 
 Pack rows are keyed by `external_ref` and are not removed by the interview erase endpoint, so erasing a student's interviews does not reset or refund their balance. **When the student's account is deleted**, also call `DELETE /api/v1/packs/by-ref/{external_ref}` (after cancelling their subscription): it removes every wallet and purchase record, cannot be undone, and is safe to repeat (`{"deleted_wallets": N, "deleted_payments": M}`). Call it only when the account is really gone; a replayed old payment would otherwise be applied again.
 
+## 4c. The light address (cheap reads without waking the speech machines)
+
+The main service (`interviewer-ms`) runs big machines that sleep when idle, because speech-to-text needs a lot of CPU. A
+student's minutes are read from many places (profile, voice page, booking, admin screens, refund and alert jobs), and each
+read sent to the main address can wake a big machine. For those reads there is a second, tiny service:
+
+| | Address (Fly private network) | Machines |
+|---|---|---|
+| Main | `http://interviewer-ms.internal:8080` | big, sleep when idle, load the speech model |
+| **Light** | `http://interviewer-ms-light.internal:8080` | one small `shared-cpu-1x`, always on, no speech model |
+
+The light service runs the same code with `LIGHT_MODE=true`, uses the **same database and the same API keys**, and answers
+the same JSON for the routes it serves, so a response from either address is interchangeable. It is a **separate Fly app**
+on purpose: Fly's load balancer sends any request to any machine of an app, so a small machine inside `interviewer-ms`
+would receive speech uploads. Send only the calls below to it.
+
+**Served by the light address** (everything else is refused):
+
+| Call | Use it for |
+|---|---|
+| `GET /api/v1/packs/{external_ref}` | a student's minutes, days left and refund eligibility on every plan |
+| `GET /api/v1/plans` | the catalog for pricing and consent screens |
+| `GET /api/v1/health`, `GET /api/v1/ready` | liveness and readiness (`/ready` is 200 once the database answers; it never waits for Whisper) |
+| `GET /api/v1/ready/details` (API key) | diagnostics; `voice.stt_model_loaded` is always `false` here |
+| `GET /` | service banner |
+
+`GET /api/v1/health` on the light address also carries `"mode": "light"`, so a caller can tell which instance answered.
+
+**Refused by the light address** with **404** and the error code `light_mode_route`
+(`{"error": {"code": "light_mode_route", "message": "...", "details": {"method": ..., "path": ...}}}`), before the API key is
+checked and before any body is read:
+
+- everything under `/api/v1/interviews` (create, upload, answers, audio answers, finish, skip, pause, resume, status, report,
+  events, transcript, list, delete, erase by ref)
+- `/api/v1/speech/transcribe` and `/api/v1/speech/synthesize`
+- every pack **write**: `POST /packs/activate`, `/revoke`, `/expire`, `/extend`, and `DELETE /packs/by-ref/{external_ref}`
+- `GET /api/v1/models`, `/docs`, `/openapi.json`
+
+Send these to the main address. Writes stay there so that purchases, refunds and erasures go through one place.
+
+Authentication, API keys, rate limits and the database are unchanged: the same key works at both addresses, and a missing or
+wrong key is still 401. The light address is read-only and does not run the background work (report-build sweep, retention
+purge, webhook outbox); the main machines do that.
+
+**In the main app (suggested):** put the light address in `RTJ_INTERVIEWER_LIGHT_URL` and use it for the read calls above.
+If it is unset, or a call to it fails (connection error, timeout, 5xx, or a 404 with code `light_mode_route`), repeat the
+same call once against the normal address (`RTJ_INTERVIEWER_URL`). The light address answers a student's balance exactly as
+the main one does, so falling back changes only which machine does the work (and may wake a big one).
+
 ## 5. Webhooks
 
 `callback_url` must be `https`, must not embed credentials, and must resolve only to public addresses (private, loopback and link-local targets are rejected, and redirects are not followed). Set `CALLBACK_ALLOWED_HOSTS=resumetojob.example.com` to restrict it to your own receiver. The check runs again at delivery time.

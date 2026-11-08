@@ -142,6 +142,11 @@ class Settings(BaseSettings):
     stt_queue_timeout_seconds: float = 20.0
     # Load the Whisper model when the service starts instead of on the first answer.
     stt_preload: bool = True
+    # Light mode: a small always-on instance (a SEPARATE Fly app, see fly.light.toml) that serves only cheap reads
+    # (health, ready, plans, a student's packs) and refuses every other route with 404 `light_mode_route`. It never
+    # loads the speech model, so /ready does not wait for it, and it runs none of the background loops (report
+    # build sweep, retention purge, webhook outbox). Off = behaviour is unchanged.
+    light_mode: bool = False
     # Piper runs one process per request, so a burst starts many CPU-bound processes at once and they all slow down
     # together until each hits its 60 s limit. Cap them per machine; extra requests wait up to
     # tts_queue_timeout_seconds, then get a 503 with Retry-After.
