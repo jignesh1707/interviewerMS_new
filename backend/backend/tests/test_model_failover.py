@@ -1,4 +1,4 @@
-"""Economy runs two models at one provider (GPT-6 Luna, then gpt-4.1-nano, both at OpenAI): a failing model must not
+"""Economy runs two models at one provider (GPT-6 Luna, then gpt-5.6-luna, both at OpenAI): a failing model must not
 take its sibling down with it, while a rejected key still stops every model of that provider."""
 
 import pytest
@@ -35,7 +35,7 @@ def messages():
 
 
 @pytest.mark.asyncio
-async def test_a_failing_gpt_6_luna_hands_over_to_gpt_4_1_nano_and_stays_out_of_the_way():
+async def test_a_failing_gpt_6_luna_hands_over_to_gpt_5_6_luna_and_stays_out_of_the_way():
     openai = Provider("openai", fail_models={"gpt-6-luna"})
     anthropic = Provider("anthropic")
     router = build(openai, anthropic)
@@ -43,16 +43,16 @@ async def test_a_failing_gpt_6_luna_hands_over_to_gpt_4_1_nano_and_stays_out_of_
     first = await router.complete("question_generation", messages())
     second = await router.complete("question_generation", messages())
 
-    assert (first.provider, first.model) == ("openai", "gpt-4.1-nano")
-    # Luna is in its own cooldown: the next call goes straight to nano, not back to Luna and not to Anthropic.
-    assert (second.provider, second.model) == ("openai", "gpt-4.1-nano")
-    assert openai.calls == ["gpt-6-luna", "gpt-4.1-nano", "gpt-4.1-nano"]
+    assert (first.provider, first.model) == ("openai", "gpt-5.6-luna")
+    # Luna is in its own cooldown: the next call goes straight to GPT-5.6 Luna, not back to GPT-6 Luna and not to Anthropic.
+    assert (second.provider, second.model) == ("openai", "gpt-5.6-luna")
+    assert openai.calls == ["gpt-6-luna", "gpt-5.6-luna", "gpt-5.6-luna"]
     assert anthropic.calls == []
 
 
 @pytest.mark.asyncio
 async def test_a_rejected_openai_key_skips_both_openai_models_until_the_cooldown_ends():
-    openai = Provider("openai", fail_models={"gpt-6-luna", "gpt-4.1-nano"}, auth_error=True)
+    openai = Provider("openai", fail_models={"gpt-6-luna", "gpt-5.6-luna"}, auth_error=True)
     anthropic = Provider("anthropic")
     router = build(openai, anthropic)
 
@@ -60,12 +60,12 @@ async def test_a_rejected_openai_key_skips_both_openai_models_until_the_cooldown
     second = await router.complete("question_generation", messages())
 
     assert first.provider == "anthropic" and second.provider == "anthropic"
-    assert openai.calls == ["gpt-6-luna"]  # the key failed once; nano is not tried with the same key
+    assert openai.calls == ["gpt-6-luna"]  # the key failed once; GPT-5.6 Luna is not tried with the same key
     ready, skipped = router._plan("standard", None)
     assert [c.provider for c in ready] == ["anthropic"]
     assert {(s["model"], s["reason"]) for s in skipped} == {
         ("gpt-6-luna", "circuit_open"),
-        ("gpt-4.1-nano", "circuit_open"),
+        ("gpt-5.6-luna", "circuit_open"),
     }
 
 
@@ -76,4 +76,4 @@ async def test_openai_is_reported_available_while_one_of_its_models_works():
     await router.complete("question_generation", messages())
     status = router.status()["providers"]["openai"]
     assert status["available"] is True
-    assert status["consecutive_failures"] == 0  # nano's success after Luna's failure
+    assert status["consecutive_failures"] == 0  # GPT-5.6 Luna succeeded after GPT-6 Luna failed

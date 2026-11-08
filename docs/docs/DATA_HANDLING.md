@@ -58,8 +58,8 @@ student can say anything aloud. Do not describe the data as anonymous.
 | Fly.io | Hosting the service (region of your choice) | Everything in section 2, in memory and in transit | All plans |
 | Supabase | Postgres database (region of your choice) | Everything stored in section 2 | All plans |
 | Upstash | Redis | Rate-limit counters, keyed by tenant and student reference; expire after a minute or two days | All plans |
-| OpenAI | AI models called directly: GPT-6 Luna, then gpt-4.1-nano | Redacted resume text and answers | Economy plan, first and second choice; fallback on Premium |
-| Anthropic | AI model | Redacted resume text and answers | Premium plan first; Economy only as a last fallback |
+| OpenAI | AI models called directly: GPT-6 Luna, then GPT-5.6 Luna | Redacted resume text and answers | Economy plan, first and second choice; fallback on Premium |
+| Anthropic | AI model | Redacted resume text and answers | Premium plan first; Economy only as a last fallback (Claude Haiku 4.5) |
 
 `GET /api/v1/plans` returns, for each plan, the providers that may process its data, computed from the configuration
 and excluding any provider switched off with `LLM_DISABLED_PROVIDERS`. Use that to build the consent screen so it
@@ -68,8 +68,8 @@ allow-list that the router enforces on every call, and the service refuses to st
 disagrees with it.
 
 Economy previously used DeepSeek, a China-based provider; as of 2026-10-08 it no longer does and both plans use US
-providers only. As of 2026-10-18 no plan uses OpenRouter either: Economy's fallback is a second OpenAI model called
-directly (gpt-4.1-nano), so only OpenAI and Anthropic ever receive student text. Check OpenAI's and Anthropic's current
+providers only. As of 2026-10-18 no plan uses OpenRouter either: Economy's chain is two OpenAI models called
+directly (GPT-6 Luna, GPT-5.6 Luna), then Claude Haiku 4.5 at Anthropic, so only OpenAI and Anthropic ever receive student text. Check OpenAI's and Anthropic's current
 published terms before launch.
 
 Provider data-retention and training terms differ by provider and by model, and change. Obtain each provider's current

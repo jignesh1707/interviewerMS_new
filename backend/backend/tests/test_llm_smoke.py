@@ -66,7 +66,7 @@ async def test_the_economy_profile_is_the_default_and_covers_both_openai_models(
     results = await smoke(router)
     assert {r["profile"] for r in results} == {"economy"}
     ok = {(r["provider"], r["model"]) for r in results if r["status"] == "ok"}
-    assert {("openai", "gpt-6-luna"), ("openai", "gpt-4.1-nano")} <= ok
+    assert {("openai", "gpt-6-luna"), ("openai", "gpt-5.6-luna")} <= ok
     assert not any(r["provider"] in {"deepseek", "openrouter"} for r in results)
 
 

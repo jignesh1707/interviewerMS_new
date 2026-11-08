@@ -25,7 +25,7 @@ test suite on SQLite and Postgres 16.
 - Supabase: a **staging** schema and role (DEPLOY_FLY_SUPABASE.md, section 1). Use the transaction pooler URL.
 - Upstash Redis in the same region (section 2).
 - Provider keys for every provider your plans use: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`
-  (Economy calls GPT-6 Luna at OpenAI first, then gpt-4.1-nano at OpenAI, then Anthropic; no OpenRouter key needed). Staging keys with a spending cap if the providers allow it.
+  (Economy calls GPT-6 Luna at OpenAI first, then GPT-5.6 Luna at OpenAI, then Claude Haiku 4.5 at Anthropic; no OpenRouter key needed). Staging keys with a spending cap if the providers allow it.
 - Two random secrets: the service API key for the main app and `WEBHOOK_SECRET`:
 
 ```bash

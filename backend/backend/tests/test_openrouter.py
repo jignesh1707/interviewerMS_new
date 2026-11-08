@@ -30,13 +30,13 @@ def _router(**overrides):
     return ModelRouter(settings=settings, config=load_router_config(MODELS_YAML))
 
 
-def test_yaml_falls_back_to_gpt_4_1_nano_direct_and_never_reaches_openrouter():
+def test_yaml_falls_back_to_gpt_5_6_luna_direct_then_haiku_and_never_reaches_openrouter():
     config = load_router_config(MODELS_YAML)
     for tier in ("cheap", "standard", "premium"):
         second = config.candidates(tier)[1]
-        assert (second.provider, second.model) == ("openai", "gpt-4.1-nano")
-        assert (second.input_price, second.output_price) == (0.10, 0.40)
-        assert second.options == {}  # not a reasoning model: the usual temperature and max_tokens
+        assert (second.provider, second.model) == ("openai", "gpt-5.6-luna")
+        assert (second.input_price, second.output_price) == (0.20, 1.20)
+        assert second.options == config.candidates(tier)[0].options  # a reasoning model, like GPT-6 Luna
         assert all(c.provider not in {"deepseek", "openrouter"} for c in config.candidates(tier))
 
 
@@ -84,7 +84,7 @@ def test_only_configured_providers_are_used():
     assert router.provider_configured("openrouter") is True  # a key alone does not put it in the routing
     assert router.provider_configured("anthropic") is False
     ready, skipped = router._plan("standard", None)
-    assert [(c.provider, c.model) for c in ready] == [("openai", "gpt-6-luna"), ("openai", "gpt-4.1-nano")]
+    assert [(c.provider, c.model) for c in ready] == [("openai", "gpt-6-luna"), ("openai", "gpt-5.6-luna")]
     assert {item["provider"] for item in skipped} == {"anthropic"}
 
 
@@ -111,7 +111,7 @@ async def test_an_openai_outage_falls_through_both_openai_models_to_anthropic():
     router.provider_configured = lambda name: name in {"openai", "anthropic"}
     result = await router.complete("question_generation", _messages())
     assert result.provider == "anthropic"
-    assert openai.calls == 2 and anthropic.calls == 1  # GPT-6 Luna, then gpt-4.1-nano, then Anthropic
+    assert openai.calls == 2 and anthropic.calls == 1  # GPT-6 Luna, then gpt-5.6-luna, then Anthropic
     assert router.health("openai").consecutive_failures == 2
 
 
@@ -199,7 +199,7 @@ def test_every_luna_entry_runs_at_low_reasoning_effort():
     config = load_router_config(MODELS_YAML)
     for tier in ("cheap", "standard", "premium"):
         lunas = [c for c in config.candidates(tier) if "luna" in c.model]
-        assert len(lunas) == 1
+        assert [c.model for c in lunas] == ["gpt-6-luna", "gpt-5.6-luna"]
         assert all(c.options["body"] == {"reasoning_effort": "low"} for c in lunas)
 
 

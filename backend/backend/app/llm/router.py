@@ -220,7 +220,7 @@ class ModelRouter:
         return self._health.setdefault(name, ProviderHealth())
 
     def model_health(self, candidate: ModelCandidate) -> ProviderHealth:
-        """One model's own circuit, so two models at one provider (Economy: GPT-6 Luna, then gpt-4.1-nano) fail over
+        """One model's own circuit, so two models at one provider (Economy: GPT-6 Luna, then GPT-5.6 Luna) fail over
         to each other instead of a failing model putting the whole provider in cooldown."""
         return self._model_health.setdefault(f"{candidate.provider}/{candidate.model}", ProviderHealth())
 
