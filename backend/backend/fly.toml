@@ -79,12 +79,18 @@ primary_region = "iad"
     timeout = "5s"
     grace_period = "60s"   # Fly caps this at 60 s. The speech model loads in the background; /ready is 503 until then
 
-# Whisper base (int8) plus the API need ~1 GB under load; 2 GB leaves headroom for concurrent transcriptions. Two shared
-# vCPUs for now. Staging with one shared vCPU failed at 15 simultaneous students, but those runs were dominated by AI calls
-# that were never cut off (fixed separately: a deadline on the whole call), so whether one vCPU is enough is to be re-tested.
-# A shared CPU is throttled after a few seconds of sustained work; the answer when speech is constant is
-# `fly scale vm performance-2x`.
+# Speech-to-text (Whisper base, int8, on the CPU) is the bottleneck, so the CPU kind matters more than anything else.
+# Staging load test, 2026-11-07, 36 s clips, sustained, per machine (notes: project memory
+# `interviewer-loadtest-2026-11-07`, writeup in the Jarvis repo vault/output/2026-11-07-interviewer-staging-load-test.md):
+#   shared-cpu-2x   1.6 answers/min  (throttled after ~45 s; failed at 10 simultaneous students)
+#   shared-cpu-8x   2.1 answers/min  (throttled after ~2 min; failed 30 at once)
+#   performance-1x  8.6 answers/min  (about 310 s of audio per minute, no throttling)
+#   performance-2x 15.6 answers/min  (about 560 s of audio per minute, no throttling)  <- chosen
+# performance-2x costs about $0.092 an hour per running machine (4 GB is its smallest preset; memory peaked at 863 MB).
+# Planning figure: one performance-2x machine carries about 10 students at once if answers average ~90 s (about 16 at
+# 60 s). Halve the 36 s-clip numbers for long answers; size booked slots from the real average answer length.
+# Machines sleep when idle (min_machines_running = 0), so start the machines a slot needs BEFORE the slot: a cold burst
+# pins every connection to the first machine that wakes.
 [[vm]]
-  size = "shared-cpu-2x"
-  memory = "2gb"
-  cpus = 2
+  size = "performance-2x"
+  memory = "4gb"
