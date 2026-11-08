@@ -160,4 +160,18 @@ Things to know:
   `/api/v1/interviews` answers 404 `light_mode_route`.
 - **Cost and size.** One `shared-cpu-1x` with 512 MB runs all day. Add a second machine with
   `fly scale count 2 -a interviewer-ms-light` only if one is not enough.
+- **Database connections.** Each light machine opens up to `DB_POOL_SIZE` (5) connections to the shared Supabase pooler, on top of
+  the big machines' connections. Count them when sizing the pool limit.
+- **Staging.** The Resumeto change must be tested on staging before production, so create `interviewer-ms-light-staging` the same
+  way, from the same `fly.light.toml` (`-a` overrides the app name):
+
+  ```bash
+  fly apps create interviewer-ms-light-staging
+  fly secrets set -a interviewer-ms-light-staging --stage API_KEYS=... DATABASE_URL=... REDIS_URL=...   # REDIS_URL only if staging has one
+  fly deploy -c fly.light.toml -a interviewer-ms-light-staging --no-public-ips --build-arg GIT_SHA=$(git rev-parse HEAD)
+  ```
+
+  Take the values from the `interviewer-ms-staging` note in Bitwarden: the same `API_KEYS`, and the `DATABASE_URL` of the
+  `interviewer_staging` schema and role (never the production one). It can be stopped between tests
+  (`fly machine stop <id> -a interviewer-ms-light-staging`); the next request through Fly's proxy starts it again.
 - **If it is down**, the main app falls back to the normal address (INTEGRATION.md section 4c). Nothing else depends on it.

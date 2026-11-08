@@ -48,7 +48,7 @@ pair, change both sides, then run `Pairs`.
 | What | Production | Staging |
 |---|---|---|
 | Interviewer API key | `interviewer-ms` `API_KEYS` contains `resumetojob:<key>` and `resumetojob-api` `RTJ_INTERVIEWER_API_KEY` = `<key>` | same with the `-staging` apps |
-| Interviewer light app (`interviewer-ms-light`, once created) | its `API_KEYS`, `DATABASE_URL` and `REDIS_URL` hold the same values as `interviewer-ms`; it needs no AI provider key, `WEBHOOK_SECRET` or `CALLBACK_ALLOWED_HOSTS` | (no staging light app) |
+| Interviewer light app (`interviewer-ms-light`, once created) | its `API_KEYS`, `DATABASE_URL` and `REDIS_URL` hold the same values as `interviewer-ms`; it needs no AI provider key, `WEBHOOK_SECRET` or `CALLBACK_ALLOWED_HOSTS` | `interviewer-ms-light-staging` (once created): `API_KEYS` and `DATABASE_URL` (the `interviewer_staging` schema and role) hold the same values as `interviewer-ms-staging`, `REDIS_URL` only if staging has one |
 | Interviewer webhook secret | `interviewer-ms` `WEBHOOK_SECRET` = `resumetojob-api` `RTJ_INTERVIEWER_WEBHOOK_SECRET` | same with the `-staging` apps |
 | Callback host | the host of `RTJ_INTERVIEWER_CALLBACK_URL` is listed in `interviewer-ms` `CALLBACK_ALLOWED_HOSTS` | same with the `-staging` apps |
 | Tailoring token | `resumetojob-tailoring` `TAILORING_JWT_SECRET` = `resumetojob-api` `RTJ_TAILORING_JWT_SECRET` | (no staging tailoring app) |
