@@ -110,6 +110,29 @@ def test_a_spoken_answer_sent_in_time_is_kept_when_the_deadline_passes_during_tr
     assert _status(client, interview_id)["seconds_remaining"] > 0  # the 30 s were given back
 
 
+def test_a_duplicate_audio_upload_is_refused_before_it_is_transcribed(client, monkeypatch):
+    interview_id = create(client)["interview"]["id"]
+    calls = []
+
+    async def transcribe(content, filename):
+        calls.append(filename)
+        return {"text": ANSWER, "language": "en", "duration_seconds": 40.0, "processing_ms": 1}
+
+    monkeypatch.setattr(stt, "transcribe_bytes", transcribe)
+
+    assert _send_audio(client, interview_id).status_code == 200
+    assert calls == ["a.webm"]
+
+    again = _send_audio(client, interview_id)  # for example the browser's retry after a timeout
+    assert again.status_code == 409
+    assert again.json()["error"]["code"] == "conflict"
+    assert calls == ["a.webm"]  # the second clip never reached speech-to-text
+
+    out_of_range = _send_audio(client, interview_id, index=99)
+    assert out_of_range.status_code == 422
+    assert calls == ["a.webm"]
+
+
 def test_an_answer_that_arrives_after_the_deadline_is_still_refused(client, clock):
     interview_id = create(client)["interview"]["id"]
     store = storage_module.get_store()

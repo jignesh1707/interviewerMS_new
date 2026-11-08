@@ -492,6 +492,20 @@ class InterviewService:
         self.ensure_time_remaining(interview, at=received_at)
         return interview
 
+    async def ensure_question_open(self, interview: dict[str, Any], question_index: int) -> None:
+        """Refuse an audio answer that submit_answer would refuse anyway (a finished interview, an unknown question,
+        or a question already answered), BEFORE the upload is transcribed. Speech-to-text is the scarce resource
+        (about 14 s of one CPU per clip), so a duplicate upload, such as a retry after a timeout, must not spend it.
+        submit_answer repeats these checks, so a race between two uploads is still caught there."""
+        questions = list(interview.get("questions") or [])
+        if not questions:
+            raise ValidationAppError("interview has no questions yet")
+        if interview.get("status") == "completed":
+            raise ConflictError("interview is already completed; no more answers can be submitted")
+        _, target = self._resolve_question(questions, None, question_index)
+        if any(item.get("question_id") == target["id"] for item in await self.store.list_answers(interview["id"])):
+            raise ConflictError("this question has already been answered", details={"question_id": target["id"]})
+
     async def _credit_checking_time(self, interview_id: str, received_at: datetime) -> dict[str, Any] | None:
         """Move the deadline by the time the service spent checking an answer, so the student does not lose it.
 

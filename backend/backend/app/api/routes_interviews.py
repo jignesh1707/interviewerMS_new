@@ -162,6 +162,7 @@ async def submit_audio_answer(
     await enforce_student_limits(tenant, interview.get("external_ref"))  # before any speech-to-text work is spent
     service = get_interview_service()
     interview = await service.ensure_can_answer(interview)  # paused or out of time: refused before any transcription
+    await service.ensure_question_open(interview, question_index)  # a duplicate upload is refused before transcribing
     content = await read_capped(audio, get_settings().stt_max_upload_mb * 1024 * 1024, "audio")
     received_at = interview_service.utcnow()  # upload done; transcription and checking time is given back
     filename = audio.filename or "answer.webm"
