@@ -1,0 +1,77 @@
+# Fly.io config for the LIGHT Interviewer: a small, always-on instance that answers only cheap reads (a student's
+# packs/minutes, plans, health, ready) and never loads the speech model. Setup, secrets and the Resumeto change list:
+# docs/docs/DEPLOY_FLY_SUPABASE.md section 7 and docs/docs/INTEGRATION.md section 4c.
+#
+# This MUST be its own Fly app. Do not add a small machine to the `interviewer-ms` app: Fly's load balancer sends any
+# request to any machine of an app, so a small machine there would receive speech uploads and the heavy machines would
+# keep waking for reads. The app name is the address: http://interviewer-ms-light.internal:8080.
+#
+# Deploy (see the docs for the full order):
+#   fly apps create interviewer-ms-light
+#   fly secrets set -a interviewer-ms-light API_KEYS=... DATABASE_URL=... REDIS_URL=...   # names only here, never values
+#   fly deploy -c fly.light.toml --no-public-ips --build-arg GIT_SHA=$(git rev-parse HEAD)
+#
+# Secrets (API_KEYS, DATABASE_URL, REDIS_URL, ...) are set with `fly secrets set`, never here. The light app needs no
+# AI provider key, no WEBHOOK_SECRET and no CALLBACK_ALLOWED_HOSTS: it does no AI work and sends no webhooks.
+
+app = "interviewer-ms-light"
+# Same region as the main app and the database: every query is a network call.
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"   # the same image as the main app, so a release is built once; LIGHT_MODE decides what runs
+
+[env]
+  PORT = "8080"
+  HOST = "::"                 # listen on IPv6 so Fly's private network (.internal / .flycast) can reach it
+  LIGHT_MODE = "true"         # serve reads only; refuse every other route with 404 `light_mode_route`
+  STT_PRELOAD = "false"       # light mode already skips the speech model; stated here so nobody wonders
+  PLANS_ENABLED = "true"      # packs and plans exist only when plans are on. Keep it equal to the main app.
+  # If the main app sets PLANS_OVERRIDES (a JSON laid over plans.yaml), set the SAME value here, or this instance
+  # would report different durations and refund eligibility than the main one.
+  #
+  # Same per-tenant request limit as the main app. A pack read counts toward it. With REDIS_URL set on both apps the
+  # counter is shared; without it each app counts on its own.
+  RATE_LIMIT_PER_MINUTE = "1200"
+
+# Private service: no [http_service], and deploy with `fly deploy --no-public-ips`, so nothing is reachable from the
+# internet. The main app calls it over Fly's private network. If the main app is NOT in the same Fly org, this app
+# cannot be reached privately either; do not give it a public address without reviewing API_KEYS and CORS_ORIGINS.
+[[services]]
+  protocol = "tcp"
+  internal_port = 8080
+  # Always on: one machine runs all the time, never stopped by Fly's proxy.
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [services.concurrency]
+    type = "requests"
+    soft_limit = 100   # reads are a few ms of work; the limit that matters is the database pool (DB_POOL_SIZE, 5)
+    hard_limit = 250
+
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+
+  [[services.http_checks]]
+    method = "GET"
+    path = "/api/v1/health"
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "30s"
+
+  [[services.http_checks]]
+    method = "GET"
+    path = "/api/v1/ready"   # database reachable. In light mode it does not wait for Whisper.
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "30s"
+
+# Small and cheap on purpose: no speech work runs here, so a shared CPU is enough. Light mode never imports the speech
+# model, so 512 MB is plenty for the API and its database pool. Run a second light machine
+# (`fly scale count 2 -a interviewer-ms-light`) only if one is not enough; Resumeto falls back to the normal address
+# when the light one is down.
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

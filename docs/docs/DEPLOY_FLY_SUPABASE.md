@@ -113,3 +113,51 @@ machine is interrupted. That should be rare; if machines keep dying mid-build (f
 
 - Speech to text still runs inside the API process. At higher load, move it to its own Fly app with larger CPU
   machines.
+
+## 7. The light instance (`interviewer-ms-light`)
+
+A small, always-on Interviewer that answers only cheap reads (a student's packs and minutes, plans, health, ready) so those
+reads do not wake the big speech machines. Config: `backend/backend/fly.light.toml`. Which calls it serves and refuses, and
+what the main app changes: `INTEGRATION.md` section 4c.
+
+**It must be a SEPARATE Fly app.** Do not add a small machine to `interviewer-ms`. Fly's load balancer sends a request to any
+machine of an app, so a small machine inside the existing app would receive speech uploads (and the big ones would still wake
+for reads). `LIGHT_MODE=true` also refuses those uploads with 404 `light_mode_route`, but that is a safety net, not the design.
+
+Create it once (run from `backend/backend`; nothing here deploys the main app):
+
+```bash
+fly apps create interviewer-ms-light
+fly secrets set -a interviewer-ms-light --stage API_KEYS=... DATABASE_URL=... REDIS_URL=...   # values from Bitwarden, see below
+fly deploy -c fly.light.toml --no-public-ips --build-arg GIT_SHA=$(git rev-parse HEAD)
+fly ips allocate-v6 --private -a interviewer-ms-light   # only if the main app reaches the main service through .flycast
+fly status -a interviewer-ms-light                      # one machine, started, 2 checks passing
+```
+
+Secrets the light app needs (names only; copy the **values** from the `interviewer-ms` production note in Bitwarden, never
+into a file or a chat):
+
+| Secret | Needed? | Notes |
+|---|---|---|
+| `API_KEYS` | yes | the same value as the main app, so `RTJ_INTERVIEWER_API_KEY` works at both addresses |
+| `DATABASE_URL` | yes | the same database and role as the main app: the light app reads the same packs |
+| `REDIS_URL` | recommended | with it, rate-limit counters are shared with the main app; without it each app counts separately |
+| `CORS_ORIGINS` | no | only the main app's backend calls it, and the default passes the startup check; set it to the main app's value if you want them identical |
+
+Not needed on the light app (it does no AI work and sends no webhooks): `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+`OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`, `WEBHOOK_SECRET`, `CALLBACK_ALLOWED_HOSTS`. If the main app sets `PLANS_OVERRIDES`,
+set the same value on the light app so both report the same pack numbers.
+
+Things to know:
+
+- **Same release.** Deploy the light app from the same commit as the main app and redeploy both when you release. It runs the
+  same migrations on start (`DB_AUTO_MIGRATE`), so a light app on much older code than the main app can read a schema it does
+  not know.
+- **Secrets map.** Record `interviewer-ms-light` next to `interviewer-ms` in `ops/secrets/README.md` (its `API_KEYS` must hold
+  the same key as the main app's).
+- **Check it.** `curl http://interviewer-ms-light.internal:8080/api/v1/health` from a machine on the private network answers
+  `"mode": "light"`. `GET /api/v1/packs/<ref>` with the API key returns the same body as the main address. A call to
+  `/api/v1/interviews` answers 404 `light_mode_route`.
+- **Cost and size.** One `shared-cpu-1x` with 512 MB runs all day. Add a second machine with
+  `fly scale count 2 -a interviewer-ms-light` only if one is not enough.
+- **If it is down**, the main app falls back to the normal address (INTEGRATION.md section 4c). Nothing else depends on it.

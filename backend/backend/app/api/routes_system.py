@@ -19,7 +19,10 @@ router = APIRouter(tags=["system"])
 async def health() -> dict:
     # GIT_SHA is baked in at image build time (Dockerfile ARG). An image built
     # without it carries an empty value, which is as unknown as an unset one.
-    return {"status": "ok", "service": get_settings().app_name, "release": os.environ.get("GIT_SHA") or "unknown"}
+    body = {"status": "ok", "service": get_settings().app_name, "release": os.environ.get("GIT_SHA") or "unknown"}
+    if get_settings().light_mode:
+        body["mode"] = "light"  # lets a caller (or an operator) confirm which kind of instance answered
+    return body
 
 
 @router.get("/ready")
@@ -30,7 +33,8 @@ async def ready() -> dict:
     except Exception:  # noqa: BLE001
         logger.exception("readiness_check_failed")
         raise ServiceUnavailableError("storage unavailable") from None
-    if stt.preload_pending():
+    # A light instance never loads the speech model, so it must not wait for it.
+    if not get_settings().light_mode and stt.preload_pending():
         raise ServiceUnavailableError("speech model is still loading")
     return {"status": "ok"}
 
