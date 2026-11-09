@@ -157,12 +157,15 @@ async def submit_audio_answer(
     question_index: Annotated[int, Form()],
     audio: Annotated[UploadFile, File()],
     duration_seconds: Annotated[float | None, Form()] = None,
+    # Optional and stronger than question_index: a follow-up inserted meanwhile renumbers every later question, so a
+    # client that sends the id of the question it asked can never land on a different one.
+    question_id: Annotated[str | None, Form(max_length=100)] = None,
 ) -> AnswerResponse:
     interview = await get_async_store().get_interview_for_tenant(interview_id, tenant)
     await enforce_student_limits(tenant, interview.get("external_ref"))  # before any speech-to-text work is spent
     service = get_interview_service()
     interview = await service.ensure_can_answer(interview)  # paused or out of time: refused before any transcription
-    await service.ensure_question_open(interview, question_index)  # a duplicate upload is refused before transcribing
+    await service.ensure_question_open(interview, question_index, question_id)  # a duplicate upload is refused before transcribing
     content = await read_capped(audio, get_settings().stt_max_upload_mb * 1024 * 1024, "audio")
     received_at = interview_service.utcnow()  # upload done; transcription and checking time is given back
     filename = audio.filename or "answer.webm"
@@ -174,6 +177,7 @@ async def submit_audio_answer(
     result = await service.submit_answer(
         interview_id,
         transcript=transcription["text"],
+        question_id=question_id,
         question_index=question_index,
         duration_seconds=duration,
         audio_path=audio_path,

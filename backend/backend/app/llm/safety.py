@@ -62,7 +62,7 @@ _permit: ContextVar["_BoundaryPermit | None"] = ContextVar("model_safety_permit"
 _TASK_SCHEMAS: dict[str, dict[str, Any]] = {
     "question_generation": {"questions": list},
     "answer_analysis": {"scores": dict},
-    "followup_generation": {"followup": str},
+    "followup_generation": {"followup": (str, type(None))},  # null = the answer needs no follow-up
     "final_scoring": {"overall_score": (int, float)},
     "tips_generation": {"quick_wins": list},
     "report_narrative": {"narrative": str},

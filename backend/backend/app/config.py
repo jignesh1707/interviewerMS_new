@@ -130,6 +130,8 @@ class Settings(BaseSettings):
     finish_async: bool = False
     finish_stale_seconds: int = 300  # a build with no progress for this long is taken over by the sweeper
     finish_sweep_seconds: int = 60
+    # The report build waits this long for per-answer analyses still running in the background, then computes the rest.
+    answer_analysis_wait_seconds: float = 20.0
 
     whisper_model: str = "base"
     whisper_device: str = "cpu"

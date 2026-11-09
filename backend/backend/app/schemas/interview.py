@@ -136,7 +136,8 @@ class AnswerResponse(BaseModel):
     transcript: str
     metrics: dict[str, Any]
     heuristic_scores: dict[str, Any]
-    analysis: dict[str, Any] | None = None
+    analysis: dict[str, Any] | None = None  # filled in the background: null here, read it later from GET .../answers
+    analysis_status: str | None = None  # "pending" (being written to the answer), "disabled" (analyze_per_answer off)
     followup: str | None = None
     followup_question: Question | None = None
     questions: list[Question] | None = None

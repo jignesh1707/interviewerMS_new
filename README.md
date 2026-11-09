@@ -256,6 +256,8 @@ To keep running costs low:
 - Cheap-tier models handle short follow-ups, tagging and coaching hints.
 - Fallback order is OpenAI (GPT-6 Luna), then OpenRouter (GPT-5.6 Luna), then Anthropic, so a later candidate is only used when earlier ones fail or are unconfigured.
 - The `premium` tier (GPT-6 Luna on Economy, Claude Sonnet 5.5 on Premium) is used only for final scoring and the recruiter narrative.
+- Per-answer LLM analysis runs in the background after the answer is stored (the next question does not wait for it);
+  the report build waits for it or computes any that is missing.
 - Per-answer LLM analysis can be disabled with `config.analyze_per_answer = false`, which leaves
   Python heuristics in place.
 - If providers fail, the report falls back to a fully deterministic scorecard rather than retrying

@@ -15,6 +15,7 @@ from app.services import interview_service as interview_service_module
 from app.services import webhook
 from app.services.storage import get_store
 from tests.fakes import FakeRouter
+from tests.helpers import wait_for_analyses
 
 KEY_A = "a" * 40
 KEY_B = "b" * 40
@@ -264,7 +265,8 @@ def test_injected_answer_is_flagged_and_score_bounded(client, fake):
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["metrics"]["integrity_flags"] == ["possible_prompt_injection"]
-    assert body["analysis"]["scores"]["overall"] <= body["heuristic_scores"]["overall"] + 10
+    stored = wait_for_analyses(client, interview_id, HEADERS_A)[0]  # analysed in the background
+    assert stored["analysis"]["scores"]["overall"] <= body["heuristic_scores"]["overall"] + 10
     events = client.get(f"/api/v1/interviews/{interview_id}/events", headers=HEADERS_A).json()["items"]
     assert any(item["event_type"] == "integrity.possible_prompt_injection" for item in events)
 

@@ -5,6 +5,7 @@ from app.api import deps
 from app.services import interview_service as interview_service_module
 from app.services import storage as storage_module
 from tests.fakes import FakeRouter
+from tests.helpers import wait_for_analyses
 
 HEADERS = {"X-API-Key": "test-key"}
 
@@ -91,8 +92,13 @@ def test_full_interview_flow(client):
     assert answer.status_code == 200, answer.text
     body = answer.json()
     assert body["heuristic_scores"]["overall"] > 0
-    assert body["analysis"]["scores"]["overall"] == 76
+    assert body["analysis"] is None  # the full analysis is written in the background, not waited for
+    assert body["analysis_status"] == "pending"
     assert body["followup"]
+    stored = wait_for_analyses(client, interview_id)  # the same analysis, read from the answer a moment later
+    assert stored[0]["analysis"]["scores"]["overall"] == 76
+    assert stored[0]["router"]["analysis"]["tier"] == "standard"
+    assert stored[0]["router"]["followup"]["tier"]  # the follow-up's routing note is kept next to it
 
     transcript = client.get(f"/api/v1/interviews/{interview_id}/transcript", headers=HEADERS)
     assert transcript.status_code == 200
