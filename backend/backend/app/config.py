@@ -137,6 +137,7 @@ class Settings(BaseSettings):
     whisper_device: str = "cpu"
     whisper_compute_type: str = "int8"
     whisper_language: str = ""
+    whisper_beam_size: int = 5  # 1 is faster and a little less accurate; change only after an A/B on real answers
     stt_max_upload_mb: int = 25
     # Transcriptions running at once per machine (CPU bound). Others wait up to stt_queue_timeout_seconds, then get a
     # 503 with Retry-After so the client can retry instead of every request slowing down together.
