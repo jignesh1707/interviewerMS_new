@@ -66,8 +66,14 @@ For each question:
    (`text` form field, returns `audio/wav`).
 2. Record the answer in the browser with `MediaRecorder`.
 3. Upload it to `POST /api/v1/interviews/{id}/answers/audio` with `question_index`, `audio` and
-   `duration_seconds`. The service transcribes and analyses it.
-4. Show the returned `heuristic_scores`, `analysis`, and `followup`.
+   `duration_seconds`. Also send `question_id` (optional): it wins over `question_index`, so a client that plays the
+   next question early cannot land on the wrong one after a follow-up was inserted and the later questions renumbered.
+   The service transcribes the answer and decides the follow-up, then returns.
+4. Show the returned `heuristic_scores` and `followup`. The detailed `analysis` (strengths, improvements, suggested
+   rewrite) is written to the answer a few seconds after the response: the response has `analysis: null` and
+   `analysis_status: "pending"` (`"disabled"` when `analyze_per_answer` is false). Read it later from
+   `GET /api/v1/interviews/{id}/answers`. The report never misses it: finishing waits for any analysis still running
+   and computes any that is missing.
 
 Typed answers use `POST /api/v1/interviews/{id}/answers` with `question_index` and `transcript`.
 
@@ -315,7 +321,7 @@ The refund rule in `plans.yaml` is `rule: any`: refundable while **either** at m
 
 - **Student id is required.** Send `external_ref` on create (use a stable id; hashing it with a secret pepper keeps raw user ids out of this service, but never rotate the pepper or balances and erasure stop matching).
 - **Choose a length** with `config.duration_minutes` (default: the plan's default). A length the plan does not allow returns 422. The length sets `question_count` and `max_followups`; values you send for those are replaced.
-- **Server-side deadline.** The create response has `interview.duration_minutes` and `interview.deadline_at` (length plus `grace_seconds`, counted from when the questions are ready). After it, answers return **409** `time_limit_reached`; `finish` still works so the student gets the report. Audio is refused before any transcription work is spent. The time the service spends checking an answer (speech-to-text and AI analysis, from the moment the upload is received) is added back to `deadline_at`, so the student never loses time waiting; an answer received before the deadline is accepted even if the deadline passes while it is being checked. Re-read the status after each answer: `deadline_at` and `seconds_remaining` move forward. The status (create, `GET .../status`) also carries `grace_seconds` and `seconds_remaining` (to `deadline_at`, measured by the server, so a countdown does not depend on the student's clock). The nominal end to show the student is `seconds_remaining - grace_seconds`; the demo UI's countdown (`frontend/frontend/src/countdown.ts`) does exactly that.
+- **Server-side deadline.** The create response has `interview.duration_minutes` and `interview.deadline_at` (length plus `grace_seconds`, counted from when the questions are ready). After it, answers return **409** `time_limit_reached`; `finish` still works so the student gets the report. Audio is refused before any transcription work is spent. The time the service spends checking an answer (speech-to-text and the follow-up decision, from the moment the upload is received) is added back to `deadline_at`, so the student never loses time waiting; an answer received before the deadline is accepted even if the deadline passes while it is being checked. Re-read the status after each answer: `deadline_at` and `seconds_remaining` move forward. The status (create, `GET .../status`) also carries `grace_seconds` and `seconds_remaining` (to `deadline_at`, measured by the server, so a countdown does not depend on the student's clock). The nominal end to show the student is `seconds_remaining - grace_seconds`; the demo UI's countdown (`frontend/frontend/src/countdown.ts`) does exactly that.
 - **Per-answer caps** (always on): `MAX_ANSWER_SECONDS` (180) and `MAX_TRANSCRIPT_CHARS` (4000). Longer answers return 422 and are not stored.
 - **Pause:** one per interview, at most `MAX_PAUSE_SECONDS` (300); see "Pausing" in section 3.
 

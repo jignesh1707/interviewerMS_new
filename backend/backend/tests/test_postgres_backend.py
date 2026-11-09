@@ -143,6 +143,25 @@ def test_update_report_and_events_roundtrip(store):
     assert [e["event_type"] for e in store.list_events(interview["id"])] == ["a", "b"]
 
 
+def test_answer_analysis_update_touches_only_the_answer_row(store):
+    interview = _create(store)
+    answer = store.add_answer(
+        interview_id=interview["id"], question_id="q0", question_index=0, question="Q", transcript="t",
+        audio_path=None, metrics={}, heuristic_scores={}, analysis=None,
+        router={"followup": {"model": "haiku"}}, duration_seconds=1.0,
+    )
+    before = store.get_interview(interview["id"])
+
+    assert store.update_answer_analysis(answer["id"], {"scores": {"overall": 70}}, {"analysis": {"model": "sonnet"}})
+
+    assert store.get_interview(interview["id"]) == before
+    stored = store.get_answer(answer["id"])
+    assert stored["analysis"] == {"scores": {"overall": 70}}
+    assert stored["router"] == {"followup": {"model": "haiku"}, "analysis": {"model": "sonnet"}}
+    store.delete_interview(interview["id"])
+    assert store.update_answer_analysis(answer["id"], {"scores": {"overall": 1}}, None) is False
+
+
 def test_delete_removes_everything_in_one_transaction(store):
     interview = _create(store)
     store.add_answer(

@@ -306,6 +306,44 @@ class Store:
         )
         return self.get_answer(answer_id)
 
+    def update_answer_analysis(
+        self,
+        answer_id: str,
+        analysis: dict[str, Any] | None,
+        router_patch: dict[str, Any] | None = None,
+    ) -> bool:
+        """Write the AI analysis of one answer after the answer was stored (it is analysed in the background).
+
+        Touches ONLY that answer's row: never ``interviews`` (the follow-up insert and the checking-time credit
+        write there at the same moment). ``router_patch`` is merged into the answer's routing record, so the
+        follow-up's entry written earlier is kept. An ``analysis`` of None leaves the stored analysis alone (a
+        degraded run must not erase a good one). Returns False when the answer no longer exists (the interview was
+        deleted meanwhile); that is not an error.
+        """
+        if analysis is None and not router_patch:
+            return False
+        lock = " FOR UPDATE" if self.db.dialect == "postgres" else ""  # the merge below reads, then writes
+        with self.db.transaction() as tx:
+            rows = tx.query_all(f"SELECT router FROM answers WHERE id = ?{lock}", (answer_id,))
+            if not rows:
+                return False
+            assignments: list[str] = []
+            values: list[Any] = []
+            if analysis is not None:
+                assignments.append("analysis = ?")
+                values.append(json.dumps(analysis))
+            if router_patch:
+                try:
+                    current = json.loads(rows[0]["router"]) if rows[0].get("router") else {}
+                except (TypeError, json.JSONDecodeError):
+                    current = {}
+                if not isinstance(current, dict):
+                    current = {}
+                assignments.append("router = ?")
+                values.append(json.dumps({**current, **router_patch}))
+            values.append(answer_id)
+            return tx.execute_count(f"UPDATE answers SET {', '.join(assignments)} WHERE id = ?", tuple(values)) == 1
+
     def count_answers(self, interview_id: str) -> int:
         row = self._query_one("SELECT COUNT(*) AS n FROM answers WHERE interview_id = ?", (interview_id,))
         return int(row["n"]) if row else 0

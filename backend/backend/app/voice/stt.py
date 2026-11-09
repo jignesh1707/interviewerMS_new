@@ -90,7 +90,7 @@ def _transcribe_sync(audio_path: str) -> dict:
     model = _model
     segments, info = model.transcribe(
         audio_path,
-        beam_size=5,
+        beam_size=settings.whisper_beam_size,
         vad_filter=True,
         language=settings.whisper_language or None,
     )

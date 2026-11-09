@@ -59,16 +59,25 @@ Return JSON exactly in this shape:
     return [LLMMessage(role="system", content=SYSTEM), LLMMessage(role="user", content=user)]
 
 
-def build_followup_messages(*, question: str, transcript: str, gaps: list[str]) -> list[LLMMessage]:
+def build_followup_messages(*, question: str, transcript: str, must_ask: bool = False) -> list[LLMMessage]:
+    """One fast call that finds what the answer is missing and, if it matters, writes the follow-up.
+
+    This stands in for the slow per-answer analysis on the path the student waits on, so the model is asked for the
+    gaps (``missing_evidence``) as well as the question. ``must_ask`` is set when the text metrics already rate the
+    answer below the follow-up threshold: the question must then be written even if the model finds few gaps.
+    """
+    rule = (
+        "This answer scored low on the text metrics, so you MUST write a follow-up (never null)."
+        if must_ask
+        else "If the answer already gives specific, concrete evidence for what the question asks, set followup to null."
+    )
     user = f"""Interview question: {question}
 
 Candidate answer transcript:
 {untrusted("candidate_answer", transcript, 4000)}
 
-Detected weaknesses: {", ".join(gaps) if gaps else "none"}
-
-Write ONE short follow-up question (max 25 words) that probes the weakest part of the answer.
-Return JSON exactly: {{"followup": string, "reason": string}}"""
+First list what evidence the answer is missing (for example: no measurable result, no personal role, no concrete example, no reason for a decision). Then write ONE short follow-up question (max 25 words) that probes the weakest part. {rule}
+Return JSON exactly: {{"missing_evidence": [string], "followup": string | null}}"""
     return [LLMMessage(role="system", content=SYSTEM), LLMMessage(role="user", content=user)]
 
 

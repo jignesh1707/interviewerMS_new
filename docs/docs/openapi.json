@@ -74,6 +74,17 @@
             ],
             "title": "Analysis"
           },
+          "analysis_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Status"
+          },
           "answer_id": {
             "title": "Answer Id",
             "type": "string"
@@ -394,6 +405,18 @@
               }
             ],
             "title": "Duration Seconds"
+          },
+          "question_id": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Question Id"
           },
           "question_index": {
             "title": "Question Index",

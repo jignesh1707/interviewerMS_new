@@ -74,6 +74,8 @@ class InterviewService:
         self.settings = get_settings()
         self.packs = PackService(self.store)
         self._build_tasks: set[asyncio.Task] = set()
+        # Per-answer analyses running in the background in this process: {interview_id: {answer_id: task}}.
+        self._analysis_tasks: dict[str, dict[str, asyncio.Task]] = {}
 
     async def create_interview(
         self,
@@ -322,7 +324,8 @@ class InterviewService:
         self.enforce_answer_caps(transcript=transcript, duration_seconds=duration_seconds)
 
         resolved_index, target = self._resolve_question(questions, question_id, question_index)
-        if any(item.get("question_id") == target["id"] for item in await self.store.list_answers(interview_id)):
+        existing_answers = await self.store.list_answers(interview_id)
+        if any(item.get("question_id") == target["id"] for item in existing_answers):
             raise ConflictError(
                 "this question has already been answered", details={"question_id": target["id"]}
             )
@@ -330,32 +333,14 @@ class InterviewService:
         metrics = analyze_transcript(transcript, duration_seconds)
         heuristics = heuristic_score(metrics)
 
-        analysis = None
-        injection_flags: list[str] = []
         router_trace: dict[str, Any] = {}
         config = interview.get("config") or {}
         policy = self._policy_for(config)
         # The copy of the answer that goes to an AI provider; the stored transcript and the metrics use the original.
         llm_transcript = self._for_llm_text(transcript, interview.get("candidate_name"))
 
-        if config.get("analyze_per_answer", True):
-            analysis, routing = await self._try_llm_json(
-                LLMTask.ANSWER_ANALYSIS,
-                build_answer_analysis_messages(
-                    question=question_text,
-                    transcript=llm_transcript,
-                    metrics=metrics,
-                    heuristic_scores=heuristics,
-                ),
-                interview_id,
-                policy,
-            )
-            if routing:
-                router_trace["analysis"] = routing
-            injection_flags = detect_injection(transcript)
-            analysis = clamp_scores(
-                analysis, heuristics, 10 if injection_flags else self.settings.score_clamp_delta
-            )
+        analyse = bool(config.get("analyze_per_answer", True))
+        injection_flags = detect_injection(transcript) if analyse else []
         if injection_flags:
             metrics["integrity_flags"] = ["possible_prompt_injection"]
             await self.store.add_event(
@@ -364,36 +349,8 @@ class InterviewService:
                 {"source": "answer", "question_index": resolved_index, "phrases": injection_flags},
             )
 
-        overall = float(
-            (analysis or {}).get("scores", {}).get("overall", heuristics.get("overall", 0))
-        )
-        existing_answers = await self.store.list_answers(interview_id)
-        followup_question = None
-        if self._should_generate_followup(
-            config=config,
-            questions=questions,
-            target=target,
-            existing_answers=existing_answers,
-            overall=overall,
-            analysis=analysis,
-        ):
-            payload, routing = await self._try_llm_json(
-                LLMTask.FOLLOWUP_GENERATION,
-                build_followup_messages(
-                    question=question_text,
-                    transcript=llm_transcript,
-                    gaps=list((analysis or {}).get("missing_evidence") or []),
-                ),
-                interview_id,
-                policy,
-            )
-            if routing:
-                router_trace["followup"] = routing
-            text = (payload or {}).get("followup")
-            if text:
-                followup_question = self._build_followup_question(questions, resolved_index, target, text)
-                questions = self._insert_question(questions, resolved_index + 1, followup_question)
-
+        # The answer is stored first: whatever happens next, the transcript is safe. The Sonnet analysis is NOT on
+        # the student's wait; it runs in the background and the report build fills in any that is missing.
         answer = await self.store.add_answer(
             interview_id=interview_id,
             question_id=target["id"],
@@ -403,10 +360,58 @@ class InterviewService:
             audio_path=audio_path,
             metrics=metrics,
             heuristic_scores=heuristics,
-            analysis=analysis,
-            router=router_trace or None,
+            analysis=None,
+            router=None,
             duration_seconds=duration_seconds,
         )
+
+        # One fast call decides the follow-up (and names what the answer misses). It only runs when the caps allow.
+        overall = float(heuristics.get("overall", 0))
+        followup_question = None
+        gate: dict[str, Any] = {"asked": False}
+        if self._followup_allowed(
+            config=config, questions=questions, target=target, existing_answers=existing_answers
+        ):
+            below_threshold = overall < float(config.get("followup_score_threshold", 75))
+            payload, routing = await self._try_llm_json(
+                LLMTask.FOLLOWUP_GENERATION,
+                build_followup_messages(question=question_text, transcript=llm_transcript, must_ask=below_threshold),
+                interview_id,
+                policy,
+            )
+            text = (payload or {}).get("followup")
+            text = text.strip() if isinstance(text, str) else ""
+            gaps = (payload or {}).get("missing_evidence")
+            gate = {
+                "asked": True,
+                "heuristic_below_threshold": below_threshold,
+                "model_missing_evidence": len(gaps) if isinstance(gaps, list) else None,
+                "model_followup": bool(text),
+            }
+            if routing:
+                router_trace["followup"] = {**routing, "gate": gate}
+                try:  # a routing note only: losing it must not lose the answer
+                    await self.store.update_answer_analysis(answer["id"], None, {"followup": router_trace["followup"]})
+                except Exception:  # noqa: BLE001
+                    logger.exception("followup_routing_note_failed interview=%s answer=%s", interview_id, answer["id"])
+            if text:
+                followup_question = self._build_followup_question(questions, resolved_index, target, text)
+                questions = self._insert_question(questions, resolved_index + 1, followup_question)
+
+        if analyse:
+            # Started only after the follow-up's routing note is written, so the two never write the same field.
+            self._spawn_analysis(
+                interview_id,
+                answer["id"],
+                question=question_text,
+                transcript=llm_transcript,
+                metrics=metrics,
+                heuristics=heuristics,
+                policy=policy,
+                clamp_delta=10 if injection_flags else self.settings.score_clamp_delta,
+                gate=gate,
+            )
+
         changes: dict[str, Any] = {"status": "in_progress"}
         if followup_question:
             changes["questions"] = questions
@@ -436,7 +441,8 @@ class InterviewService:
             "transcript": answer["transcript"],
             "metrics": metrics,
             "heuristic_scores": heuristics,
-            "analysis": analysis,
+            "analysis": None,  # written to the answer a few seconds later; read it with GET .../answers
+            "analysis_status": "pending" if analyse else "disabled",
             "followup": followup_question["question"] if followup_question else None,
             "followup_question": followup_question,
             "questions": questions if followup_question else None,
@@ -444,6 +450,135 @@ class InterviewService:
             "all_answered": next_question is None,
             "router": router_trace or None,
         }
+
+    # ------------------------------------------------------------------ background answer analysis
+
+    async def _run_answer_analysis(
+        self,
+        interview_id: str,
+        *,
+        question: str,
+        transcript: str,
+        metrics: dict[str, Any],
+        heuristics: dict[str, Any],
+        policy: "LLMPolicy",
+        clamp_delta: int,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        """The per-answer AI analysis (coaching, strengths, improvements), scores clamped to the text metrics.
+        Returns (analysis, routing); analysis is None when every provider failed."""
+        analysis, routing = await self._try_llm_json(
+            LLMTask.ANSWER_ANALYSIS,
+            build_answer_analysis_messages(
+                question=question, transcript=transcript, metrics=metrics, heuristic_scores=heuristics
+            ),
+            interview_id,
+            policy,
+        )
+        return clamp_scores(analysis, heuristics, clamp_delta), routing
+
+    def _spawn_analysis(self, interview_id: str, answer_id: str, **work: Any) -> None:
+        task = asyncio.create_task(self._analyse_answer_later(interview_id, answer_id, **work))
+        self._analysis_tasks.setdefault(interview_id, {})[answer_id] = task
+
+        def forget(done: asyncio.Task) -> None:
+            tasks = self._analysis_tasks.get(interview_id)
+            if tasks is not None and tasks.get(answer_id) is done:
+                del tasks[answer_id]
+                if not tasks:
+                    self._analysis_tasks.pop(interview_id, None)
+
+        task.add_done_callback(forget)
+
+    async def _analyse_answer_later(
+        self,
+        interview_id: str,
+        answer_id: str,
+        *,
+        question: str,
+        transcript: str,
+        metrics: dict[str, Any],
+        heuristics: dict[str, Any],
+        policy: "LLMPolicy",
+        clamp_delta: int,
+        gate: dict[str, Any] | None = None,
+    ) -> None:
+        """Analyse one stored answer and write the result to its row. Never raises: the report build recomputes
+        any analysis that is missing, so this task only makes things faster. If this machine restarts first, the task
+        is simply lost."""
+        try:
+            analysis, routing = await self._run_answer_analysis(
+                interview_id,
+                question=question,
+                transcript=transcript,
+                metrics=metrics,
+                heuristics=heuristics,
+                policy=policy,
+                clamp_delta=clamp_delta,
+            )
+            await self.store.update_answer_analysis(answer_id, analysis, {"analysis": routing} if routing else None)
+            if analysis is not None and gate and gate.get("asked"):
+                # Lets us compare, for a while, the fast follow-up decision with what the full analysis found.
+                logger.info(
+                    "followup_gate_compare answer=%s gate=%s analysis_missing_evidence=%d",
+                    answer_id,
+                    gate,
+                    len(analysis.get("missing_evidence") or []),
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.exception("answer_analysis_failed interview=%s answer=%s", interview_id, answer_id)
+
+    async def _ensure_answer_analyses(
+        self, interview: dict[str, Any], answers: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Guarantee for the report: every answer that should have an analysis has one before scoring.
+
+        Waits (up to ``answer_analysis_wait_seconds``) for analyses still running in this process; whatever is still
+        missing after that, for any reason (the task failed, was cancelled, or its machine restarted), is computed
+        here, all together. Returns the answers re-read from the database."""
+        interview_id = interview["id"]
+        config = interview.get("config") or {}
+        if not config.get("analyze_per_answer", True):
+            return answers  # switched off for this interview: the report uses the text metrics, as before
+
+        def missing(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            return [row for row in rows if not self.is_skipped(row) and not row.get("analysis")]
+
+        todo = missing(answers)
+        if not todo:
+            return answers
+        running = self._analysis_tasks.get(interview_id, {})
+        waiting = [running[row["id"]] for row in todo if row["id"] in running and not running[row["id"]].done()]
+        if waiting:
+            await asyncio.wait(waiting, timeout=self.settings.answer_analysis_wait_seconds)
+            answers = await self.store.list_answers(interview_id)
+            todo = missing(answers)
+            if not todo:
+                return answers
+
+        policy = self._policy_for(config)
+        candidate = interview.get("candidate_name")
+
+        async def recompute(row: dict[str, Any]) -> None:
+            metrics = row.get("metrics") or {}
+            late = self._analysis_tasks.get(interview_id, {}).get(row["id"])
+            if late is not None and not late.done():
+                late.cancel()  # too slow: this run replaces it
+            analysis, routing = await self._run_answer_analysis(
+                interview_id,
+                question=row["question"],
+                transcript=self._for_llm_text(row.get("transcript") or "", candidate),
+                metrics=metrics,
+                heuristics=row.get("heuristic_scores") or {},
+                policy=policy,
+                clamp_delta=10 if metrics.get("integrity_flags") else self.settings.score_clamp_delta,
+            )
+            await self.store.update_answer_analysis(row["id"], analysis, {"analysis": routing} if routing else None)
+
+        logger.info("report_fills_missing_analyses interview=%s count=%d", interview_id, len(todo))
+        await asyncio.gather(*(recompute(row) for row in todo))
+        return await self.store.list_answers(interview_id)
 
     # ----------------------------------------------------------------------------- pause
 
@@ -492,7 +627,9 @@ class InterviewService:
         self.ensure_time_remaining(interview, at=received_at)
         return interview
 
-    async def ensure_question_open(self, interview: dict[str, Any], question_index: int) -> None:
+    async def ensure_question_open(
+        self, interview: dict[str, Any], question_index: int | None, question_id: str | None = None
+    ) -> None:
         """Refuse an audio answer that submit_answer would refuse anyway (a finished interview, an unknown question,
         or a question already answered), BEFORE the upload is transcribed. Speech-to-text is the scarce resource
         (about 14 s of one CPU per clip), so a duplicate upload, such as a retry after a timeout, must not spend it.
@@ -502,7 +639,7 @@ class InterviewService:
             raise ValidationAppError("interview has no questions yet")
         if interview.get("status") == "completed":
             raise ConflictError("interview is already completed; no more answers can be submitted")
-        _, target = self._resolve_question(questions, None, question_index)
+        _, target = self._resolve_question(questions, question_id, question_index)
         if any(item.get("question_id") == target["id"] for item in await self.store.list_answers(interview["id"])):
             raise ConflictError("this question has already been answered", details={"question_id": target["id"]})
 
@@ -655,15 +792,14 @@ class InterviewService:
         return question_index, questions[question_index]
 
     @staticmethod
-    def _should_generate_followup(
+    def _followup_allowed(
         *,
         config: dict[str, Any],
         questions: list[dict[str, Any]],
         target: dict[str, Any],
         existing_answers: list[dict[str, Any]],
-        overall: float,
-        analysis: dict[str, Any] | None,
     ) -> bool:
+        """The caps only: may this answer get a follow-up at all? (Whether it should is the model's call.)"""
         if not config.get("ask_followups", True):
             return False
         if target.get("is_followup") or int(target.get("depth", 0)) > 0:
@@ -677,9 +813,7 @@ class InterviewService:
         answered_followups = sum(1 for item in existing_answers if item.get("question_id", "").endswith("-f"))
         if answered_followups >= max_followups:
             return False
-        threshold = float(config.get("followup_score_threshold", 75))
-        has_gaps = bool((analysis or {}).get("missing_evidence"))
-        return overall < threshold or has_gaps
+        return True
 
     @staticmethod
     def _build_followup_question(
@@ -799,6 +933,7 @@ class InterviewService:
     async def _build_report(self, interview_id: str, callback_url: str | None = None) -> dict[str, Any]:
         interview = await self.store.get_interview(interview_id)
         answers = await self.store.list_answers(interview_id)
+        answers = await self._ensure_answer_analyses(interview, answers)  # the guarantee: no analysis is left out
         questions = interview.get("questions") or []
         index_by_id = {item.get("id"): position for position, item in enumerate(questions)}
 

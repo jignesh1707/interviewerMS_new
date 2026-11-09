@@ -130,11 +130,14 @@ class Settings(BaseSettings):
     finish_async: bool = False
     finish_stale_seconds: int = 300  # a build with no progress for this long is taken over by the sweeper
     finish_sweep_seconds: int = 60
+    # The report build waits this long for per-answer analyses still running in the background, then computes the rest.
+    answer_analysis_wait_seconds: float = 20.0
 
     whisper_model: str = "base"
     whisper_device: str = "cpu"
     whisper_compute_type: str = "int8"
     whisper_language: str = ""
+    whisper_beam_size: int = 5  # 1 is faster and a little less accurate; change only after an A/B on real answers
     stt_max_upload_mb: int = 25
     # Transcriptions running at once per machine (CPU bound). Others wait up to stt_queue_timeout_seconds, then get a
     # 503 with Retry-After so the client can retry instead of every request slowing down together.
